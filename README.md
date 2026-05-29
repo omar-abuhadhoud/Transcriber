@@ -61,6 +61,8 @@ This creates the expected `models` folder. Copy your existing Faster Whisper mod
 
 The folder should contain files like `model.bin`, `config.json`, `tokenizer.json`, `vocabulary.json`, and `preprocessor_config.json`.
 
+The exe also uses this same install-level `models` folder. Do not put the model inside `dist\Transcriber\models` unless you intentionally want an exe-local fallback.
+
 When `--skip-model` is used, the installer opens the `models` folder and does not launch the app automatically. Start the app from the Desktop shortcut after copying the model files.
 
 On later updates it keeps the heavy local files:

@@ -6,6 +6,7 @@ import site
 DEVICE = "cuda"
 COMPUTE_TYPE = "float16"
 MODEL_REPO_ID = os.environ.get("TRANSCRIPTOR_MODEL_REPO", "Systran/faster-whisper-large-v3")
+REQUIRED_MODEL_FILES = ("model.bin", "config.json", "tokenizer.json", "vocabulary.json")
 
 
 def _add_gpu_dll_directories():
@@ -47,12 +48,48 @@ def resource_path(relative_path):
 MODEL_DIR = resource_path("models")
 
 
-def get_model_dir():
+def has_required_model_files(model_dir):
+    return all(os.path.exists(os.path.join(model_dir, file_name)) for file_name in REQUIRED_MODEL_FILES)
+
+
+def get_install_root():
     if getattr(sys, "frozen", False):
-        external_dir = os.path.join(os.path.dirname(sys.executable), "models")
-        if os.path.exists(os.path.join(external_dir, "model.bin")):
-            return external_dir
-    return MODEL_DIR
+        exe_dir = os.path.dirname(sys.executable)
+        if os.path.basename(exe_dir).lower() == "transcriber" and os.path.basename(os.path.dirname(exe_dir)).lower() == "dist":
+            return os.path.dirname(os.path.dirname(exe_dir))
+        return exe_dir
+
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_model_candidates():
+    candidates = []
+
+    env_model_dir = os.environ.get("TRANSCRIPTOR_MODEL_DIR")
+    if env_model_dir:
+        candidates.append(env_model_dir)
+
+    install_root = get_install_root()
+    candidates.append(os.path.join(install_root, "models"))
+
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.join(os.path.dirname(sys.executable), "models"))
+
+    candidates.append(MODEL_DIR)
+
+    unique_candidates = []
+    for path in candidates:
+        normalized = os.path.abspath(path)
+        if normalized not in unique_candidates:
+            unique_candidates.append(normalized)
+    return unique_candidates
+
+
+def get_model_dir():
+    for model_dir in get_model_candidates():
+        if has_required_model_files(model_dir):
+            return model_dir
+    return os.path.join(get_install_root(), "models")
 
 # --- GLOBAL MODEL (Prevents Crash) ---
 _GLOBAL_MODEL = None
@@ -75,15 +112,10 @@ def load_model_globally(status_callback=None):
 
 def ensure_model_downloaded(status_callback=None):
     model_dir = get_model_dir()
-    required_files = ("model.bin", "config.json", "tokenizer.json", "vocabulary.json")
-    if all(os.path.exists(os.path.join(model_dir, file_name)) for file_name in required_files):
+    if has_required_model_files(model_dir):
         return
 
-    if getattr(sys, "frozen", False):
-        base_dir = os.path.dirname(sys.executable)
-        download_dir = os.path.join(base_dir, "models")
-    else:
-        download_dir = MODEL_DIR
+    download_dir = os.path.join(get_install_root(), "models")
 
     os.makedirs(download_dir, exist_ok=True)
 
