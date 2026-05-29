@@ -1,8 +1,10 @@
 import argparse
 import hashlib
 import os
+import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -79,6 +81,20 @@ def run(command, **kwargs):
         raise subprocess.CalledProcessError(return_code, command)
 
 
+def run_quiet(command):
+    command = [str(part) for part in command]
+    log("+ " + " ".join(command))
+    return subprocess.run(
+        command,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
 def venv_python():
     if os.name == "nt":
         return VENV_DIR / "Scripts" / "python.exe"
@@ -145,6 +161,45 @@ def install_build_requirements(python):
 
     progress(88, "Installing exe build tools")
     run([python, "-m", "pip", "install", "-r", "requirements-dev.txt"])
+
+
+def stop_running_transcriptor():
+    if os.name != "nt":
+        return
+
+    result = run_quiet(["tasklist", "/FI", "IMAGENAME eq Transcriber.exe"])
+    if "Transcriber.exe" not in result.stdout:
+        log("No running Transcriber.exe process found.")
+        return
+
+    progress(86, "Closing running Transcriptor app")
+    log("Transcriber.exe is running. Closing it before rebuilding the exe.")
+    kill_result = run_quiet(["taskkill", "/IM", "Transcriber.exe", "/F"])
+    if kill_result.stdout:
+        for line in kill_result.stdout.splitlines():
+            log(line)
+    time.sleep(2)
+
+
+def remove_locked_build_folder():
+    dist_app_dir = ROOT / "dist" / "Transcriber"
+    if not dist_app_dir.exists():
+        return
+
+    for attempt in range(1, 6):
+        try:
+            shutil.rmtree(dist_app_dir)
+            log(f"Removed old build folder: {dist_app_dir}")
+            return
+        except PermissionError as exc:
+            if attempt == 1:
+                stop_running_transcriptor()
+            log(f"Build folder is locked; retry {attempt}/5: {exc}")
+            time.sleep(2)
+
+    raise PermissionError(
+        f"Could not remove {dist_app_dir}. Close Transcriptor and any Explorer/terminal window inside that folder, then rerun setup."
+    )
 
 
 def download_model(python, model_repo):
@@ -240,7 +295,9 @@ def build_exe(python, force=False):
             log(f"Using existing exe: {EXE_PATH}")
             return
 
+    stop_running_transcriptor()
     install_build_requirements(python)
+    remove_locked_build_folder()
     progress(92, "Building Transcriptor exe")
     run([python, "-m", "PyInstaller", "--noconfirm", "Transcriber.spec"])
     if not EXE_PATH.exists():
