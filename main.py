@@ -39,10 +39,6 @@ class TranscriptorQueueApp(ctk.CTk):
         self.header_frame = ctk.CTkFrame(self)
         self.header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=10)
 
-        # IMPORTANT: Responsiveness Configuration
-        # This tells the frame: "Column 1 (the progress bar) gets all the extra space"
-        self.header_frame.grid_columnconfigure(1, weight=1)
-
         # 1. Add Button (Fixed width, Left side)
         self.btn_add = ctk.CTkButton(
             self.header_frame, 
@@ -52,14 +48,17 @@ class TranscriptorQueueApp(ctk.CTk):
             width=140,
             height=35
         )
-        self.btn_add.grid(row=0, column=0, padx=(0, 15), sticky="w")
+        self.btn_add.pack(side="left", padx=(0, 15))
 
-        # 2. Progress Bar (Flexible width, Middle)
-        self.progress_bar = ctk.CTkProgressBar(self.header_frame, height=12)
-        self.progress_bar.grid(row=0, column=1, sticky="ew", padx=5)
-        self.progress_bar.grid_remove()
-
-        self.progress_bar.set(0) # Start empty
+        # 4. Total Duration Label (Fixed width, Far Right)
+        formatted_time = Util.format_duration(self.total_duration)
+        self.lbl_total_duration = ctk.CTkLabel(
+            self.header_frame, 
+            text=f'Total: {formatted_time}', 
+            text_color="gray", 
+            font=("Arial", 12)
+        )
+        self.lbl_total_duration.pack(side="right", padx=(20, 0))
 
         # 3. Counter Label (e.g., "12/50") - Fixed width, Right of bar
         self.lbl_progress_count = ctk.CTkLabel(
@@ -68,20 +67,14 @@ class TranscriptorQueueApp(ctk.CTk):
             font=("Arial", 12, "bold"),
             text_color=("gray10", "gray90") # Adaptive color for light/dark mode
         )
-        self.lbl_progress_count.grid(row=0, column=2, padx=(5, 15))
-        
-        
+        self.lbl_progress_count.pack(side="right", padx=(5, 15))
 
-        # 4. Total Duration Label (Fixed width, Far Right)
-        # Assuming you have a format_duration function defined elsewhere
-        formatted_time = Util.format_duration(self.total_duration)
-        self.lbl_total_duration = ctk.CTkLabel(
-            self.header_frame, 
-            text=f'Total: {formatted_time}', 
-            text_color="gray", 
-            font=("Arial", 12)
-        )
-        self.lbl_total_duration.grid(row=0, column=3, sticky="e",padx=20)
+        # 2. Progress Bar (Flexible width, Middle - fills remaining space)
+        self.progress_bar = ctk.CTkProgressBar(self.header_frame, height=12)
+        self.progress_bar.pack(side="left", fill="x", expand=True, padx=5)
+        self.progress_bar.pack_forget()  # Hide initially
+
+        self.progress_bar.set(0) # Start empty
 
 
 
@@ -108,11 +101,26 @@ class TranscriptorQueueApp(ctk.CTk):
         # Start the background worker
         self.start_worker_thread()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        # Optimize window state changes
+        self.bind("<Unmap>", self._on_minimize)
+        self.bind("<Map>", self._on_restore)
      
 
     def start_worker_thread(self):
         self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)
         self.worker_thread.start()
+
+    def _on_minimize(self, event):
+        """Pause UI updates when minimized to reduce lag on restore"""
+        # Stop updating progress bars while minimized
+        pass
+
+    def _on_restore(self, event):
+        """Resume UI updates when restored"""
+        # Force a single refresh after restore instead of recalculating everything
+        if self.items:
+            self.after(100, self.update_total_progress)
 
 
 
@@ -129,7 +137,7 @@ class TranscriptorQueueApp(ctk.CTk):
             self.items.append(item)
             self.total_duration=self.total_duration+item.durationInSeconds
             self.update_total_duration_label()
-            self.progress_bar.grid()
+            self.progress_bar.pack(side="left", fill="x", expand=True, padx=5)
             self.update_total_progress()
 
             
@@ -266,7 +274,7 @@ class TranscriptorQueueApp(ctk.CTk):
         totalCount=len(self.items)
         if totalCount==0: 
             self.lbl_progress_count.configure(text="")
-            self.progress_bar.grid_remove()
+            self.progress_bar.pack_forget()
             return
         doneCount=sum([1 for x in self.items if x.state=="done"])
         percentage=doneCount/totalCount
@@ -313,9 +321,13 @@ class TranscriptorQueueApp(ctk.CTk):
                                 raise self.UserCancelled()  # <--- CRITICAL: Abort immediately!
                             return False
 
+                        def on_status(message):
+                            self.after(0, lambda target=current_item, text=message: target.update_status(text, "processing"))
+
                         transcribe_module.run_transcription(
                             current_item.file_path,
                             progress_callback=on_progress,
+                            status_callback=on_status,
                             check_cancel=check_cancel
                         )
                     
@@ -345,8 +357,3 @@ class TranscriptorQueueApp(ctk.CTk):
 if __name__ == "__main__":
     app = TranscriptorQueueApp()
     app.mainloop()
-
-
-
-
-

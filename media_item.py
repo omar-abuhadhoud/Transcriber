@@ -37,63 +37,70 @@ class MediaItem(ctk.CTkFrame):
         self.recovery_file = recovery_path
 
         # --- UI LAYOUT ---
-        self.grid_columnconfigure(1, weight=1) 
+        # Use pack for top section (faster than grid)
+        top_frame = ctk.CTkFrame(self, fg_color="transparent")
+        top_frame.pack(fill="x", padx=5, pady=5)
         
+        # Left section
+        left_frame = ctk.CTkFrame(top_frame, fg_color="transparent")
+        left_frame.pack(side="left", fill="both", expand=True)
         
         # 1. Filename
-        self.lbl_name = ctk.CTkLabel(self, text=self.filename, anchor="w", font=("Arial", 12, "bold"))
-        self.lbl_name.grid(row=0, column=0, columnspan=2, padx=10, pady=(5,0), sticky="ew")
+        self.lbl_name = ctk.CTkLabel(left_frame, text=self.filename, anchor="w", font=("Arial", 12, "bold"))
+        self.lbl_name.pack(anchor="w", padx=5)
         
-        
-        self.lbl_duration = ctk.CTkLabel(self, text=Util.format_duration(self.durationInSeconds), text_color="gray", font=("Arial", 11))
-        self.lbl_duration.grid(row=2, column=0, padx=15, pady=1, sticky="w") 
+        # 2. Duration
+        self.lbl_duration = ctk.CTkLabel(left_frame, text=Util.format_duration(self.durationInSeconds), text_color="gray", font=("Arial", 11))
+        self.lbl_duration.pack(anchor="w", padx=5, pady=(2, 0))
     
-        # 2. Status
-        self.lbl_status = ctk.CTkLabel(self, text="Idle", text_color="gray", font=("Arial", 11))
-        self.lbl_status.grid(row=0, column=2, padx=10, pady=(5,0), sticky="e")
-
+        # Right section (status + stopwatch)
+        right_frame = ctk.CTkFrame(top_frame, fg_color="transparent")
+        right_frame.pack(side="right", padx=5)
         
-        self.lbl_stopwatch=StopWatchLabel(self)
-        self.lbl_stopwatch.grid(row=2, column=2, padx=10, sticky="e")
-
+        self.lbl_status = ctk.CTkLabel(right_frame, text="Idle", text_color="gray", font=("Arial", 11))
+        self.lbl_status.pack(anchor="e")
+        
+        self.lbl_stopwatch=StopWatchLabel(right_frame)
+        self.lbl_stopwatch.pack(anchor="e", pady=(2, 0))
 
         # 3. Progress Bar
         self.progress_bar = ctk.CTkProgressBar(self, height=8)
-        self.progress_bar.grid(row=1, column=0, columnspan=3, padx=10, pady=(5, 5), sticky="ew")
+        self.progress_bar.pack(fill="x", padx=10, pady=(0, 5))
         self.progress_bar.set(0)
 
         # 4. Buttons
         self.btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.btn_frame.grid(row=0, column=3, rowspan=3, padx=5, pady=5, sticky="e")
+        self.btn_frame.pack(fill="x", padx=5, pady=(0, 5))
 
-        self.btn_start = ctk.CTkButton(self.btn_frame, text="▶", width=30, height=30, 
-                                       command=self.request_start, fg_color="green")
-        self.btn_start.pack(side="left", padx=2)
-
-        self.btn_stop = ctk.CTkButton(self.btn_frame, text="⏹", width=30, height=30, 
-                                      command=self.request_stop, fg_color="#c0392b", state="disabled")
-        self.btn_stop.pack(side="left", padx=2)
-
-        self.btn_view = ctk.CTkButton(
-    self.btn_frame, 
-    text="👁",           # The Eye Icon
-    width=40,            # Make it square/small
-    font=("Arial", 20), state="disabled", command=self.open_in_word_rtl
-)
-        self.btn_view.pack(padx=2,side="left")
-
-        self.btn_copy = ctk.CTkButton(self.btn_frame, text="Copy", width=50, height=30, 
-                                      command=self.copy_text, state="disabled")
-        self.btn_copy.pack(side="left", padx=2)
-
-        self.btn_save = ctk.CTkButton(self.btn_frame, text="Save", width=50, height=30, 
-                                      command=self.save_text, state="disabled")
-        self.btn_save.pack(side="left", padx=2)
-
+        # Pack buttons from right to left for better visual balance
         # [ADD THIS CODE] --- Delete Button ---
         self.btn_delete = ctk.CTkButton(self.btn_frame, text="X", width=30, height=30,
                                         command=self._handle_delete_click, fg_color="#7f8c8d", hover_color="#95a5a6")
-        self.btn_delete.pack(side="left", padx=2)
+        self.btn_delete.pack(side="right", padx=2)
+
+        self.btn_save = ctk.CTkButton(self.btn_frame, text="Save", width=50, height=30, 
+                                      command=self.save_text, state="disabled")
+        self.btn_save.pack(side="right", padx=2)
+
+        self.btn_copy = ctk.CTkButton(self.btn_frame, text="Copy", width=50, height=30, 
+                                      command=self.copy_text, state="disabled")
+        self.btn_copy.pack(side="right", padx=2)
+
+        self.btn_view = ctk.CTkButton(
+            self.btn_frame, 
+            text="👁",           # The Eye Icon
+            width=40,            # Make it square/small
+            font=("Arial", 20), state="disabled", command=self.open_in_word_rtl
+        )
+        self.btn_view.pack(side="right", padx=2)
+
+        self.btn_stop = ctk.CTkButton(self.btn_frame, text="⏹", width=30, height=30, 
+                                      command=self.request_stop, fg_color="#c0392b", state="disabled")
+        self.btn_stop.pack(side="right", padx=2)
+
+        self.btn_start = ctk.CTkButton(self.btn_frame, text="▶", width=30, height=30, 
+                                       command=self.request_start, fg_color="green")
+        self.btn_start.pack(side="right", padx=2)
 
         self.cancel_flag = False
 
@@ -271,6 +278,3 @@ class MediaItem(ctk.CTkFrame):
         if save_path:
             with open(self.recovery_file, "r", encoding="utf-8") as src, open(save_path, "w", encoding="utf-8") as dst:
                 dst.write(src.read())
-
-    
-    

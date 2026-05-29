@@ -1,0 +1,6 @@
+arabic-reshaper==3.0.0
+customtkinter==5.2.2
+faster-whisper==1.2.1
+huggingface_hub==1.4.1
+mutagen==1.47.0
+python-bidi==0.6.7

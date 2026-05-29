@@ -5,4 +5,6 @@ __pycache__
 dist
 models
 testing_media
-Transcriber.spec
+recovery_tmp
+.transcriptor_state
+*.spec.bak
