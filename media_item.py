@@ -227,7 +227,8 @@ class MediaItem(ctk.CTkFrame):
         self.btn_stop.configure(state="disabled")
 
     def finish_error(self, err_msg):
-        self.update_status(f"Error: {err_msg}", "error")
+        short_msg = err_msg if len(err_msg) <= 180 else err_msg[:177] + "..."
+        self.update_status(f"Error: {short_msg}", "error")
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
 

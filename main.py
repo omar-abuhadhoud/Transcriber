@@ -5,6 +5,9 @@ import os
 import queue
 import transcribe_module
 import time
+import traceback
+import sys
+from datetime import datetime
 from media_item import MediaItem
 from stopwatch import StopWatchLabel
 import global_vars
@@ -13,6 +16,23 @@ from util import Util
 # --- CONFIGURATION ---
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
+
+
+def app_base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(".")
+
+
+def log_runtime_error(message, exc=None):
+    log_dir = os.path.join(app_base_dir(), ".transcriptor_state", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "runtime.log")
+    with open(log_path, "a", encoding="utf-8") as log_file:
+        log_file.write("\n" + "=" * 72 + "\n")
+        log_file.write(f"{datetime.now().isoformat(timespec='seconds')} - {message}\n")
+        if exc is not None:
+            log_file.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
 
 class TranscriptorQueueApp(ctk.CTk):
     def __init__(self):
@@ -344,13 +364,14 @@ class TranscriptorQueueApp(ctk.CTk):
 
                 except Exception as e:
                     self.delete_recovery_file(current_item)
-                    # This handles actual errors
+                    log_runtime_error(f"Transcription failed for {current_item.file_path}", e)
                     self.after(0, lambda target=current_item: target.finish_error(str(e)))
-                    current_item.destroy()
+                    self.after(0, self.update_total_progress)
 
                 self.job_queue.task_done()
                 current_item.lbl_stopwatch.stop()
             except Exception as e:
+                log_runtime_error("Queue worker failed", e)
                 print(f"Queue Error: {e}")
                 time.sleep(1)
 
