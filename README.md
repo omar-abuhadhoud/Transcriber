@@ -39,6 +39,22 @@ install_transcriptor.bat
 
 That installer checks for Python, Git, and an NVIDIA GPU driver, downloads the project into `%USERPROFILE%\Transcriptor`, runs the GPU setup, and launches the app.
 
+To install/update the app without downloading the model:
+
+```bat
+install_transcriptor.bat --skip-model
+```
+
+This creates the expected `models` folder. Copy your existing Faster Whisper model files into:
+
+```text
+%USERPROFILE%\Transcriptor\models
+```
+
+The folder should contain files like `model.bin`, `config.json`, `tokenizer.json`, `vocabulary.json`, and `preprocessor_config.json`.
+
+When `--skip-model` is used, the installer opens the `models` folder and does not launch the app automatically. Start the app after copying the model files.
+
 On later updates it keeps the heavy local files:
 
 - `.venv` is reused unless `requirements.txt` changes.
