@@ -115,3 +115,13 @@ To skip exe creation during setup:
 ```bat
 setup_windows_gpu.bat --skip-exe
 ```
+
+## Uninstall
+
+Run:
+
+```bat
+uninstall_transcriptor.bat
+```
+
+This removes `%USERPROFILE%\Transcriptor`, the Desktop shortcut, and installer logs. It does not remove Python, Git, or NVIDIA drivers because those are shared system tools.

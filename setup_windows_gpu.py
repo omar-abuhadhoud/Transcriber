@@ -19,6 +19,7 @@ LOG_FILE = LOG_DIR / "setup_windows_gpu.log"
 REQUIREMENTS_HASH_FILE = STATE_DIR / "requirements.sha256"
 BUILD_HASH_FILE = STATE_DIR / "build.sha256"
 EXE_PATH = ROOT / "dist" / "Transcriber" / "Transcriber.exe"
+EXE_DIR = EXE_PATH.parent
 DEFAULT_MODEL_REPO = os.environ.get("TRANSCRIPTOR_MODEL_REPO", "Systran/faster-whisper-large-v3")
 BUILD_INPUT_FILES = [
     "main.py",
@@ -39,6 +40,17 @@ MODEL_FILES = [
     "tokenizer.json",
     "vocabulary.json",
 ]
+GPU_DLL_NAMES = (
+    "cublas64_12.dll",
+    "cublasLt64_12.dll",
+    "cudart64_12.dll",
+    "cudnn64_9.dll",
+)
+GPU_DLL_PATTERNS = (
+    "cuda*.dll",
+    "cublas*.dll",
+    "cudnn*.dll",
+)
 MODEL_README_FILE = ROOT / "models" / "README_MODEL_FILES.txt"
 
 
@@ -163,6 +175,88 @@ def install_build_requirements(python):
     run([python, "-m", "pip", "install", "-r", "requirements-dev.txt"])
 
 
+def find_gpu_dlls():
+    search_roots = [
+        VENV_DIR / "Scripts",
+        VENV_DIR / "Lib" / "site-packages",
+    ]
+    found = {}
+
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for dll_name in GPU_DLL_NAMES:
+            if dll_name in found:
+                continue
+            matches = list(root.rglob(dll_name))
+            if matches:
+                found[dll_name] = matches[0]
+
+    return found
+
+
+def copy_gpu_dlls_to_venv_scripts():
+    if os.name != "nt":
+        return
+
+    scripts_dir = VENV_DIR / "Scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    search_roots = [
+        VENV_DIR / "Lib" / "site-packages" / "nvidia",
+        VENV_DIR / "Lib" / "site-packages" / "torch" / "lib",
+        VENV_DIR / "Lib" / "site-packages" / "ctranslate2",
+    ]
+
+    copied = 0
+    for root in search_roots:
+        if not root.exists():
+            continue
+
+        for pattern in GPU_DLL_PATTERNS:
+            for source_path in root.rglob(pattern):
+                target_path = scripts_dir / source_path.name
+                if target_path.exists() and target_path.stat().st_size == source_path.stat().st_size:
+                    continue
+                shutil.copy2(source_path, target_path)
+                copied += 1
+                log(f"Copied GPU DLL to venv Scripts: {source_path} -> {target_path}")
+
+    if copied:
+        log(f"Copied {copied} GPU DLL(s) into {scripts_dir}")
+    else:
+        log(f"GPU DLLs already available in {scripts_dir} or no package DLLs needed copying.")
+
+
+def verify_gpu_dlls_available():
+    copy_gpu_dlls_to_venv_scripts()
+    found = find_gpu_dlls()
+    missing = [dll_name for dll_name in GPU_DLL_NAMES if dll_name not in found]
+    if missing:
+        raise RuntimeError(
+            "Missing CUDA runtime DLLs after dependency install: "
+            + ", ".join(missing)
+            + ". Run setup again, or install the latest NVIDIA CUDA/cuDNN pip packages."
+        )
+    for dll_name, path in found.items():
+        log(f"CUDA DLL available: {dll_name} -> {path}")
+
+
+def verify_exe_gpu_dlls():
+    dll_dirs = [EXE_DIR, EXE_DIR / "_internal"]
+    missing = [
+        dll_name
+        for dll_name in GPU_DLL_NAMES
+        if not any((dll_dir / dll_name).exists() for dll_dir in dll_dirs)
+    ]
+    if missing:
+        raise RuntimeError(
+            "The exe build is missing CUDA DLLs: "
+            + ", ".join(missing)
+            + ". Rebuild with the updated Transcriber.spec."
+        )
+    log("Exe CUDA DLL check passed.")
+
+
 def stop_running_transcriptor():
     if os.name != "nt":
         return
@@ -283,6 +377,7 @@ if cuda_devices < 1:
 """
     run([python, "-c", code])
     progress(85, "CUDA GPU runtime ready")
+    verify_gpu_dlls_available()
 
 
 def build_exe(python, force=False):
@@ -302,6 +397,7 @@ def build_exe(python, force=False):
     run([python, "-m", "PyInstaller", "--noconfirm", "Transcriber.spec"])
     if not EXE_PATH.exists():
         raise FileNotFoundError(f"PyInstaller did not create expected exe: {EXE_PATH}")
+    verify_exe_gpu_dlls()
 
     STATE_DIR.mkdir(exist_ok=True)
     BUILD_HASH_FILE.write_text(current_hash, encoding="utf-8")

@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 import glob
 import os
+import site
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('icon.ico', '.')]
@@ -9,6 +10,15 @@ binaries = []
 for pattern in ('cuda*.dll', 'cublas*.dll', 'cudnn*.dll'):
     for dll_path in glob.glob(os.path.join('.venv', 'Scripts', pattern)):
         binaries.append((dll_path, '.'))
+
+for site_dir in site.getsitepackages():
+    for pattern in (
+        os.path.join(site_dir, 'nvidia', '**', 'bin', '*.dll'),
+        os.path.join(site_dir, 'torch', 'lib', '*.dll'),
+        os.path.join(site_dir, 'ctranslate2', '*.dll'),
+    ):
+        for dll_path in glob.glob(pattern, recursive=True):
+            binaries.append((dll_path, '.'))
 
 hiddenimports = ['sklearn.utils._typedefs', 'sklearn.neighbors._partition_nodes']
 tmp_ret = collect_all('faster_whisper')

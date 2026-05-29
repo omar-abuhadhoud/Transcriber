@@ -3,4 +3,7 @@ customtkinter==5.2.2
 faster-whisper==1.2.1
 huggingface_hub==1.4.1
 mutagen==1.47.0
+nvidia-cublas-cu12
+nvidia-cuda-runtime-cu12
+nvidia-cudnn-cu12
 python-bidi==0.6.7

@@ -19,6 +19,14 @@ def _add_gpu_dll_directories():
         os.path.join(os.path.dirname(sys.executable), "Scripts"),
     ]
 
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        candidates.extend([
+            exe_dir,
+            os.path.join(exe_dir, "_internal"),
+            getattr(sys, "_MEIPASS", ""),
+        ])
+
     for site_dir in site.getsitepackages():
         nvidia_dir = os.path.join(site_dir, "nvidia")
         if not os.path.isdir(nvidia_dir):
