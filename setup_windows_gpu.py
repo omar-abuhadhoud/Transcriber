@@ -10,11 +10,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 VENV_DIR = ROOT / ".venv"
 REQUIREMENTS_FILE = ROOT / "requirements.txt"
+DEV_REQUIREMENTS_FILE = ROOT / "requirements-dev.txt"
 STATE_DIR = ROOT / ".transcriptor_state"
 LOG_DIR = STATE_DIR / "logs"
 LOG_FILE = LOG_DIR / "setup_windows_gpu.log"
 REQUIREMENTS_HASH_FILE = STATE_DIR / "requirements.sha256"
+BUILD_HASH_FILE = STATE_DIR / "build.sha256"
+EXE_PATH = ROOT / "dist" / "Transcriber" / "Transcriber.exe"
 DEFAULT_MODEL_REPO = os.environ.get("TRANSCRIPTOR_MODEL_REPO", "Systran/faster-whisper-large-v3")
+BUILD_INPUT_FILES = [
+    "main.py",
+    "media_item.py",
+    "transcribe_module.py",
+    "util.py",
+    "global_vars.py",
+    "stopwatch.py",
+    "Transcriber.spec",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "icon.ico",
+]
 MODEL_FILES = [
     "config.json",
     "model.bin",
@@ -92,6 +107,19 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
+def build_sha256():
+    digest = hashlib.sha256()
+    for relative_path in BUILD_INPUT_FILES:
+        path = ROOT / relative_path
+        if not path.exists():
+            continue
+        digest.update(relative_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_sha256(path).encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def install_requirements(python, force=False):
     current_hash = file_sha256(REQUIREMENTS_FILE)
 
@@ -109,6 +137,14 @@ def install_requirements(python, force=False):
     STATE_DIR.mkdir(exist_ok=True)
     REQUIREMENTS_HASH_FILE.write_text(current_hash, encoding="utf-8")
     progress(45, "Python dependencies ready")
+
+
+def install_build_requirements(python):
+    if not DEV_REQUIREMENTS_FILE.exists():
+        raise FileNotFoundError(f"Missing build requirements file: {DEV_REQUIREMENTS_FILE}")
+
+    progress(88, "Installing exe build tools")
+    run([python, "-m", "pip", "install", "-r", "requirements-dev.txt"])
 
 
 def download_model(python, model_repo):
@@ -158,7 +194,7 @@ def prepare_model_folder_for_manual_copy(model_repo):
 
 
 def verify_gpu_runtime(python):
-    progress(90, "Checking CUDA GPU runtime")
+    progress(80, "Checking CUDA GPU runtime")
     code = r"""
 import os
 import sys
@@ -191,7 +227,58 @@ if cuda_devices < 1:
     )
 """
     run([python, "-c", code])
-    progress(95, "CUDA GPU runtime ready")
+    progress(85, "CUDA GPU runtime ready")
+
+
+def build_exe(python, force=False):
+    current_hash = build_sha256()
+
+    if not force and EXE_PATH.exists() and BUILD_HASH_FILE.exists():
+        previous_hash = BUILD_HASH_FILE.read_text(encoding="utf-8").strip()
+        if previous_hash == current_hash:
+            progress(95, "Exe already up to date")
+            log(f"Using existing exe: {EXE_PATH}")
+            return
+
+    install_build_requirements(python)
+    progress(92, "Building Transcriptor exe")
+    run([python, "-m", "PyInstaller", "--noconfirm", "Transcriber.spec"])
+    if not EXE_PATH.exists():
+        raise FileNotFoundError(f"PyInstaller did not create expected exe: {EXE_PATH}")
+
+    STATE_DIR.mkdir(exist_ok=True)
+    BUILD_HASH_FILE.write_text(current_hash, encoding="utf-8")
+    progress(95, "Exe ready")
+    log(f"Built exe: {EXE_PATH}")
+
+
+def ps_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def create_desktop_shortcut():
+    if os.name != "nt":
+        return
+
+    if not EXE_PATH.exists():
+        log("Desktop shortcut skipped because exe does not exist.")
+        return
+
+    desktop = Path(os.environ.get("USERPROFILE", str(ROOT))) / "Desktop"
+    shortcut_path = desktop / "Transcriptor.lnk"
+    icon_path = ROOT / "icon.ico"
+    script = (
+        "$WshShell = New-Object -ComObject WScript.Shell; "
+        f"$Shortcut = $WshShell.CreateShortcut({ps_quote(shortcut_path)}); "
+        f"$Shortcut.TargetPath = {ps_quote(EXE_PATH)}; "
+        f"$Shortcut.WorkingDirectory = {ps_quote(EXE_PATH.parent)}; "
+        f"$Shortcut.IconLocation = {ps_quote(icon_path)}; "
+        "$Shortcut.Save()"
+    )
+
+    progress(98, "Creating Desktop shortcut")
+    run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+    log(f"Desktop shortcut ready: {shortcut_path}")
 
 
 def main():
@@ -207,6 +294,8 @@ def main():
     parser.add_argument("--skip-model", action="store_true", help="Create models/ but do not download the model.")
     parser.add_argument("--skip-gpu-check", action="store_true", help="Skip the CUDA visibility check.")
     parser.add_argument("--force-deps", action="store_true", help="Reinstall Python dependencies even if requirements.txt did not change.")
+    parser.add_argument("--skip-exe", action="store_true", help="Skip building the local exe and Desktop shortcut.")
+    parser.add_argument("--force-exe", action="store_true", help="Rebuild the exe even if source files did not change.")
     args = parser.parse_args()
 
     try:
@@ -220,6 +309,10 @@ def main():
 
         if not args.skip_gpu_check:
             verify_gpu_runtime(python)
+
+        if not args.skip_exe:
+            build_exe(python, force=args.force_exe)
+            create_desktop_shortcut()
 
         progress(100, "Setup finished successfully")
         log("Setup finished successfully.")

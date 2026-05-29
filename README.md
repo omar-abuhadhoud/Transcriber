@@ -39,6 +39,14 @@ install_transcriptor.bat
 
 That installer checks for Python, Git, and an NVIDIA GPU driver, downloads the project into `%USERPROFILE%\Transcriptor`, runs the GPU setup, and launches the app.
 
+After setup, the local exe is created here:
+
+```text
+%USERPROFILE%\Transcriptor\dist\Transcriber\Transcriber.exe
+```
+
+A Desktop shortcut named `Transcriptor` is also created. On later updates, the exe is rebuilt only when source or build files changed.
+
 To install/update the app without downloading the model:
 
 ```bat
@@ -53,7 +61,7 @@ This creates the expected `models` folder. Copy your existing Faster Whisper mod
 
 The folder should contain files like `model.bin`, `config.json`, `tokenizer.json`, `vocabulary.json`, and `preprocessor_config.json`.
 
-When `--skip-model` is used, the installer opens the `models` folder and does not launch the app automatically. Start the app after copying the model files.
+When `--skip-model` is used, the installer opens the `models` folder and does not launch the app automatically. Start the app from the Desktop shortcut after copying the model files.
 
 On later updates it keeps the heavy local files:
 
@@ -99,3 +107,9 @@ Then build:
 ```
 
 Do not commit generated folders such as `.venv`, `models`, `build`, or `dist`.
+
+To skip exe creation during setup:
+
+```bat
+setup_windows_gpu.bat --skip-exe
+```

@@ -145,6 +145,11 @@ if "%SKIP_MODEL%"=="1" (
     echo Model download was skipped.
     echo Copy your model files into:
     echo %INSTALL_DIR%\models
+    if exist "%INSTALL_DIR%\dist\Transcriber\Transcriber.exe" (
+        echo.
+        echo Desktop shortcut created for:
+        echo %INSTALL_DIR%\dist\Transcriber\Transcriber.exe
+    )
     call :log Model download skipped. Waiting for manual model copy.
     start "" "%INSTALL_DIR%\models"
     pause
@@ -153,7 +158,11 @@ if "%SKIP_MODEL%"=="1" (
 
 echo Launching Transcriptor...
 call :log Launching app.
-start "" "%INSTALL_DIR%\.venv\Scripts\pythonw.exe" "%INSTALL_DIR%\main.py"
+if exist "%INSTALL_DIR%\dist\Transcriber\Transcriber.exe" (
+    start "" "%INSTALL_DIR%\dist\Transcriber\Transcriber.exe"
+) else (
+    start "" "%INSTALL_DIR%\.venv\Scripts\pythonw.exe" "%INSTALL_DIR%\main.py"
+)
 call :log Installer finished successfully.
 exit /b 0
 

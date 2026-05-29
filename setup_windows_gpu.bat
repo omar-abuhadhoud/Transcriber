@@ -31,6 +31,13 @@ if errorlevel 1 (
 )
 
 echo.
-echo Setup complete. Start the app with:
-echo .venv\Scripts\python.exe main.py
+echo Setup complete.
+if exist "dist\Transcriber\Transcriber.exe" (
+    echo Exe:
+    echo %CD%\dist\Transcriber\Transcriber.exe
+    echo A Desktop shortcut should also be available.
+) else (
+    echo Start the app with:
+    echo .venv\Scripts\python.exe main.py
+)
 echo [%DATE% %TIME%] setup_windows_gpu.bat finished successfully.>> "%SETUP_BAT_LOG%"
