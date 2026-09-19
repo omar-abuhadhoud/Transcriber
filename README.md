@@ -144,8 +144,12 @@ needs its own working memory (KV cache).
 `transcriber/speed.py` estimates each tier as `engine weights + 0.225 GB per window`
 (measured on 30-second windows, the worst case) and compares it with the installed VRAM,
 read once at startup via `nvidia-smi` so no CUDA context is created just to draw the UI.
-Tiers that do not fit are shown disabled with a tooltip explaining why, and the largest
-tier that still leaves comfortable headroom is marked *recommended*. Because the two
+Tiers that do not fit are greyed out in the dropdown and say how much VRAM they would
+need, and the largest tier that still leaves comfortable headroom is marked
+*recommended*. Both pickers are plain `CTkOptionMenu`s so the header reads as one strip;
+the speed picker used to be a button opening a hand-built popup window, which looked
+different and could be left on screen because an override-redirect window does not
+reliably receive the focus-out event that closed it. Because the two
 engines differ in weight size, the list is recomputed when the engine changes; a tier that
 no longer fits falls back to the recommended one.
 

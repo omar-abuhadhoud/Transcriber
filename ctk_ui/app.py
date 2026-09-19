@@ -90,6 +90,9 @@ class TranscriberQueueApp(ctk.CTk):
             width=190,
             height=35,
             font=("Arial", 12),
+            # Stated rather than left to the default, so this and the speed picker
+            # beside it render identically in the closed button and the open list.
+            dropdown_font=("Arial", 12),
         )
         self.engine_menu.set(registry.label_for(registry.active_engine_name()))
         self.engine_menu.pack(side="left", padx=(0, 8))

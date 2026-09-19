@@ -9,7 +9,7 @@ GitHub release tag, so a release whose tag does not match what shipped inside th
 will offer itself forever.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 # Windows file-version resources need exactly four integers.
 VERSION_TUPLE = tuple(int(part) for part in __version__.split(".")) + (0,)
