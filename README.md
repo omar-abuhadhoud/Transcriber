@@ -144,12 +144,20 @@ needs its own working memory (KV cache).
 `transcriber/speed.py` estimates each tier as `engine weights + 0.225 GB per window`
 (measured on 30-second windows, the worst case) and compares it with the installed VRAM,
 read once at startup via `nvidia-smi` so no CUDA context is created just to draw the UI.
-Tiers that do not fit are greyed out in the dropdown and say how much VRAM they would
-need, and the largest tier that still leaves comfortable headroom is marked
-*recommended*. Both pickers are plain `CTkOptionMenu`s so the header reads as one strip;
-the speed picker used to be a button opening a hand-built popup window, which looked
-different and could be left on screen because an override-redirect window does not
-reliably receive the focus-out event that closed it. Because the two
+Tiers that do not fit are greyed out in the list and say how much VRAM they would need,
+and the largest tier that still leaves comfortable headroom is marked *recommended*.
+
+Both pickers are the same widget, [`StyledOptionMenu`](ctk_ui/dropdown.py): CustomTkinter's
+option-menu button, with the list drawn by the app rather than by Tk. Tk's menu paints a
+near-white 3D frame whatever `borderwidth` and `relief` say, which glares on a dark
+window, and it cannot grey out a single entry — which is the whole point here. Every
+font goes through [`ctk_ui/theme.py`](ctk_ui/theme.py) so the app cannot drift back into
+a mix of families.
+
+The list closes on any of: clicking outside, clicking the button again, Escape, moving
+the window, or choosing a row. That redundancy is deliberate — an earlier version relied
+on `<FocusOut>` alone, and an override-redirect window does not reliably receive it, so
+the list could sit on screen with nothing able to dismiss it. Because the two
 engines differ in weight size, the list is recomputed when the engine changes; a tier that
 no longer fits falls back to the recommended one.
 

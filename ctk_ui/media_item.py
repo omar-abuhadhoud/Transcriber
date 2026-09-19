@@ -1,4 +1,6 @@
 import customtkinter as ctk
+
+from ctk_ui.theme import ui_font
 from tkinter import filedialog
 import os
 from transcriber.util import Util
@@ -39,18 +41,18 @@ class MediaItem(ctk.CTkFrame):
         left_frame.pack(side="left", fill="both", expand=True)
         
         # 1. Filename
-        self.lbl_name = ctk.CTkLabel(left_frame, text=self.filename, anchor="w", font=("Arial", 12, "bold"))
+        self.lbl_name = ctk.CTkLabel(left_frame, text=self.filename, anchor="w", font=ui_font(12, "bold"))
         self.lbl_name.pack(anchor="w", padx=5)
         
         # 2. Duration
-        self.lbl_duration = ctk.CTkLabel(left_frame, text=Util.format_duration(self.durationInSeconds), text_color="gray", font=("Arial", 11))
+        self.lbl_duration = ctk.CTkLabel(left_frame, text=Util.format_duration(self.durationInSeconds), text_color="gray", font=ui_font(11))
         self.lbl_duration.pack(anchor="w", padx=5, pady=(2, 0))
     
         # Right section (status + stopwatch)
         right_frame = ctk.CTkFrame(top_frame, fg_color="transparent")
         right_frame.pack(side="right", padx=5)
         
-        self.lbl_status = ctk.CTkLabel(right_frame, text="Idle", text_color="gray", font=("Arial", 11))
+        self.lbl_status = ctk.CTkLabel(right_frame, text="Idle", text_color="gray", font=ui_font(11))
         self.lbl_status.pack(anchor="e")
         
         self.lbl_stopwatch=StopWatchLabel(right_frame)
@@ -83,7 +85,7 @@ class MediaItem(ctk.CTkFrame):
             self.btn_frame, 
             text="👁",           # The Eye Icon
             width=40,            # Make it square/small
-            font=("Arial", 20), state="disabled", command=self.open_in_word_rtl
+            font=ui_font(20), state="disabled", command=self.open_in_word_rtl
         )
         self.btn_view.pack(side="right", padx=2)
 

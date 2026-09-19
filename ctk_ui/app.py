@@ -13,7 +13,9 @@ from transcriber.paths import get_log_dir, resource_path
 from transcriber.speed import evaluate_tiers, get_total_vram_gb
 from transcriber.version import __version__
 from ctk_ui.media_item import MediaItem
+from ctk_ui import theme
 from ctk_ui.speed_picker import SpeedPicker
+from ctk_ui.theme import ui_font
 from ctk_ui.stopwatch import StopWatchLabel
 import global_vars
 from transcriber.util import Util
@@ -74,7 +76,7 @@ class TranscriberQueueApp(ctk.CTk):
             self.header_frame,
             text="+ Add Media Files",
             command=self.add_files,
-            font=("Arial", 13, "bold"),
+            font=ui_font(13, "bold"),
             width=140,
             height=35
         )
@@ -83,16 +85,12 @@ class TranscriberQueueApp(ctk.CTk):
         # 1b. Engine picker. Switching is only allowed while the queue is idle, so a
         # run never spans two models.
         self.engine_labels = [label for _, label in registry.list_engines()]
-        self.engine_menu = ctk.CTkOptionMenu(
+        # Built through the shared helper so this and the speed picker beside it match
+        # in the closed button and in the open list.
+        self.engine_menu = theme.option_menu(
             self.header_frame,
             values=self.engine_labels,
             command=self.on_engine_selected,
-            width=190,
-            height=35,
-            font=("Arial", 12),
-            # Stated rather than left to the default, so this and the speed picker
-            # beside it render identically in the closed button and the open list.
-            dropdown_font=("Arial", 12),
         )
         self.engine_menu.set(registry.label_for(registry.active_engine_name()))
         self.engine_menu.pack(side="left", padx=(0, 8))
@@ -108,7 +106,7 @@ class TranscriberQueueApp(ctk.CTk):
             self.header_frame,
             text=f'Total: {formatted_time}',
             text_color="gray",
-            font=("Arial", 12)
+            font=ui_font(12)
         )
         self.lbl_total_duration.pack(side="right", padx=(20, 0))
 
@@ -116,7 +114,7 @@ class TranscriberQueueApp(ctk.CTk):
         self.lbl_progress_count = ctk.CTkLabel(
             self.header_frame,
             text="",
-            font=("Arial", 12, "bold"),
+            font=ui_font(12, "bold"),
             text_color=("gray10", "gray90") # Adaptive color for light/dark mode
         )
         self.lbl_progress_count.pack(side="right", padx=(5, 15))
@@ -177,7 +175,7 @@ class TranscriberQueueApp(ctk.CTk):
         self.lbl_update = ctk.CTkLabel(
             self.update_banner,
             text="",
-            font=("Arial", 12, "bold"),
+            font=ui_font(12, "bold"),
             text_color="white",
         )
         self.lbl_update.pack(side="left", padx=15, pady=8)
@@ -476,10 +474,10 @@ class TranscriberQueueApp(ctk.CTk):
         frame = ctk.CTkFrame(dialog, corner_radius=10)
         frame.pack(fill="both", expand=True)
 
-        label_title = ctk.CTkLabel(frame, text="Closing Application", font=("Arial", 16, "bold"))
+        label_title = ctk.CTkLabel(frame, text="Closing Application", font=ui_font(16, "bold"))
         label_title.pack(pady=(20, 5))
 
-        label_status = ctk.CTkLabel(frame, text="Cleaning up temporary files...", font=("Arial", 12))
+        label_status = ctk.CTkLabel(frame, text="Cleaning up temporary files...", font=ui_font(12))
         label_status.pack(pady=5)
     def _run_shutdown_tasks(self):
         """Background thread: tear down without freezing the closing dialog.

@@ -1,7 +1,8 @@
-import customtkinter as ctk
+from ctk_ui.dropdown import StyledOptionMenu
+from ctk_ui.theme import ui_font
 
 
-class SpeedPicker(ctk.CTkOptionMenu):
+class SpeedPicker(StyledOptionMenu):
     """The speed tier chooser.
 
     Deliberately the same widget as the engine picker beside it, so the header reads as
@@ -27,8 +28,8 @@ class SpeedPicker(ctk.CTkOptionMenu):
             # Matched to the engine picker so the two sit level and look alike.
             width=190,
             height=35,
-            font=("Arial", 12),
-            dropdown_font=("Arial", 12),
+            corner_radius=8,
+            font=ui_font(13),
             **kwargs,
         )
 
@@ -42,13 +43,21 @@ class SpeedPicker(ctk.CTkOptionMenu):
 
     @staticmethod
     def _entry_text(status):
-        detail = f"{status.tier.batch_size} at a time"
-        if not status.available:
-            return f"{status.tier.label}   ·   {detail}   ·   needs {status.estimate_gb:.1f} GB"
+        """One row of the list.
 
-        text = f"{status.tier.label}   ·   {detail}   ·   {status.estimate_gb:.1f} GB"
+        The tier name is padded so the columns line up: the names are short and of
+        similar width, so even in a proportional face this reads as a table rather than
+        a ragged list.
+        """
+        name = status.tier.label.ljust(8)
+        windows = f"{status.tier.batch_size} windows".ljust(11)
+
+        if not status.available:
+            return f"{name}{windows}needs {status.estimate_gb:.1f} GB"
+
+        text = f"{name}{windows}{status.estimate_gb:.1f} GB"
         if status.recommended:
-            text += "   (recommended)"
+            text += "    recommended"
         return text
 
     def _button_text(self, status):
@@ -67,28 +76,12 @@ class SpeedPicker(ctk.CTkOptionMenu):
             values.append(text)
 
         self.configure(values=values)
-        self._disable_unaffordable()
         self._show_current()
 
-    def _disable_unaffordable(self):
-        """Grey out the tiers this GPU cannot run.
-
-        Reaches into the dropdown, which is a tkinter.Menu, because CTkOptionMenu does
-        not expose per-entry state. Entries are rebuilt only when `values` changes, so
-        this survives the menu being opened and closed. Should a future CustomTkinter
-        reshape that internal, the tiers merely stay clickable and _on_pick still
-        refuses them, so the worst case is cosmetic.
-        """
-        menu = getattr(self, "_dropdown_menu", None)
-        if menu is None:
-            return
-
-        try:
-            for index, status in enumerate(self.statuses):
-                if not status.available:
-                    menu.entryconfigure(index, state="disabled")
-        except Exception:
-            pass
+    def _row_enabled(self, value):
+        """The list asks this per row; tiers this GPU cannot afford are greyed out."""
+        status = self._by_label.get(value)
+        return status is None or status.available
 
     def set_enabled(self, enabled):
         self.configure(state="normal" if enabled else "disabled")
