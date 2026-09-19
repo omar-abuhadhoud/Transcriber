@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from transcriber import transcribe_module
 from transcriber import registry
-from transcriber.paths import resource_path
+from transcriber.paths import get_log_dir, resource_path
 from transcriber.speed import evaluate_tiers, get_total_vram_gb
 from transcriber.version import __version__
 from ctk_ui.media_item import MediaItem
@@ -30,7 +30,9 @@ def app_base_dir():
 
 
 def log_runtime_error(message, exc=None):
-    log_dir = os.path.join(app_base_dir(), ".transcriber_state", "logs")
+    # Per-user, not beside the program: an update replaces the program folder
+    # wholesale, and a crash log that disappears with it helps nobody.
+    log_dir = get_log_dir()
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "runtime.log")
     with open(log_path, "a", encoding="utf-8") as log_file:
@@ -51,7 +53,7 @@ class TranscriberQueueApp(ctk.CTk):
         self.iconbitmap(resource_path("icon.ico"))
         self.after(0, lambda: self.state('zoomed'))
         self.minsize(600, 400)
-        self.grid_rowconfigure(1, weight=1) # Scroll area expands
+        self.grid_rowconfigure(2, weight=1) # Scroll area expands
         self.grid_columnconfigure(0, weight=1)
 
              # --- VARIABLES ---
@@ -60,9 +62,12 @@ class TranscriberQueueApp(ctk.CTk):
         self.total_duration=0
 
 
+        # --- 0. UPDATE BANNER (row 0, hidden until a newer release is found) ---
+        self.build_update_banner()
+
         # --- 1. HEADER ---
         self.header_frame = ctk.CTkFrame(self)
-        self.header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=10)
+        self.header_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=10)
 
         # 1. Add Button (Fixed width, Left side)
         self.btn_add = ctk.CTkButton(
@@ -124,12 +129,12 @@ class TranscriberQueueApp(ctk.CTk):
 
         # --- 2. SCROLLABLE QUEUE AREA ---
         self.scroll_area = ctk.CTkScrollableFrame(self, label_text="Transcription Queue")
-        self.scroll_area.grid(row=1, column=0, sticky="nsew", padx=20, pady=5)
+        self.scroll_area.grid(row=2, column=0, sticky="nsew", padx=20, pady=5)
         self.scroll_area.grid_columnconfigure(0, weight=1) # Items expand width
 
         # --- 3. GLOBAL FOOTER ---
         self.footer = ctk.CTkFrame(self)
-        self.footer.grid(row=2, column=0, sticky="ew", padx=20, pady=20)
+        self.footer.grid(row=3, column=0, sticky="ew", padx=20, pady=20)
 
         self.btn_save_all = ctk.CTkButton(self.footer, text="Save All Finished", command=self.save_all_finished)
         self.btn_save_all.pack(side="left", padx=10, pady=10)
@@ -149,10 +154,142 @@ class TranscriberQueueApp(ctk.CTk):
         # Optimize window state changes
         self.bind("<Map>", self._on_restore)
 
+        self.start_update_check()
+
 
     def start_worker_thread(self):
         self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)
         self.worker_thread.start()
+
+    # ----------------------------------------------------------------- updates
+
+    def build_update_banner(self):
+        """A strip above the header, shown only when a newer release exists."""
+        self.pending_update = None
+
+        self.update_banner = ctk.CTkFrame(self, fg_color="#1f6aa5")
+        self.update_banner.grid(row=0, column=0, sticky="ew", padx=20, pady=(10, 0))
+        self.update_banner.grid_remove()
+
+        self.lbl_update = ctk.CTkLabel(
+            self.update_banner,
+            text="",
+            font=("Arial", 12, "bold"),
+            text_color="white",
+        )
+        self.lbl_update.pack(side="left", padx=15, pady=8)
+
+        self.btn_update_dismiss = ctk.CTkButton(
+            self.update_banner,
+            text="Later",
+            width=70,
+            height=28,
+            fg_color="transparent",
+            border_width=1,
+            command=lambda: self.update_banner.grid_remove(),
+        )
+        self.btn_update_dismiss.pack(side="right", padx=(5, 15), pady=6)
+
+        self.btn_update_install = ctk.CTkButton(
+            self.update_banner,
+            text="Update now",
+            width=110,
+            height=28,
+            fg_color="white",
+            text_color="#1f6aa5",
+            hover_color="#e0e0e0",
+            command=self.on_update_clicked,
+        )
+        self.btn_update_install.pack(side="right", padx=5, pady=6)
+
+    def start_update_check(self):
+        """Ask GitHub for a newer release, off the UI thread.
+
+        Daemon thread with no error surface: a failed check leaves the banner hidden,
+        which is exactly what a user with no internet should see.
+        """
+        def worker():
+            try:
+                from transcriber import update as updater
+
+                found = updater.check_for_update()
+            except Exception:
+                return
+            if found:
+                self.after(0, lambda: self.show_update_banner(found))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def show_update_banner(self, found):
+        self.pending_update = found
+        size_mb = (found.get("size") or 0) / (1024 * 1024)
+        detail = f"  ({size_mb:.0f} MB)" if size_mb >= 1 else ""
+        self.lbl_update.configure(
+            text=f"Transcriber {found['version']} is available{detail}. "
+                 f"Your models and GPU runtime are kept."
+        )
+        self.update_banner.grid()
+
+    def on_update_clicked(self):
+        """Download the setup exe, then hand over to the wizard and quit."""
+        if not self.pending_update:
+            return
+
+        if self.queue_is_busy():
+            messagebox.showinfo(
+                "Update",
+                "Finish or stop the current transcriptions first, then update.",
+            )
+            return
+
+        self.btn_update_install.configure(state="disabled", text="Downloading...")
+        self.btn_update_dismiss.configure(state="disabled")
+
+        def worker():
+            from transcriber import update as updater
+
+            try:
+                def on_progress(done, total):
+                    if total:
+                        percent = int(done * 100 / total)
+                        self.after(0, lambda: self.btn_update_install.configure(
+                            text=f"{percent}%"))
+
+                installer = updater.download_installer(
+                    self.pending_update, progress_callback=on_progress
+                )
+                self.after(0, lambda: self.finish_update(installer))
+            except Exception as exc:
+                log_runtime_error("Update download failed", exc)
+                self.after(0, lambda: self.update_failed(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def update_failed(self, exc):
+        self.btn_update_install.configure(state="normal", text="Update now")
+        self.btn_update_dismiss.configure(state="normal")
+        messagebox.showerror(
+            "Update",
+            f"The update could not be downloaded.\n\n{exc}\n\n"
+            f"You can download it by hand from:\n{self.pending_update.get('page', '')}",
+        )
+
+    def finish_update(self, installer_path):
+        """Start the wizard, then leave.
+
+        The app must be gone before the wizard replaces its files, and it holds the
+        mutex the wizard waits on, so this exits immediately rather than unwinding.
+        """
+        from transcriber import update as updater
+
+        try:
+            updater.launch_installer(installer_path)
+        except Exception as exc:
+            log_runtime_error("Could not start the updater", exc)
+            self.update_failed(exc)
+            return
+
+        os._exit(0)
 
     def _on_restore(self, event):
         """Refresh once after the window is restored.

@@ -47,6 +47,13 @@ def get_model_candidates():
     # never re-downloads what is already on disk.
     candidates.append(os.path.join(get_install_root(), "models"))
 
+    # Where the pre-wizard batch installer cloned the project. Weights left there are
+    # used where they lie rather than moved: 5.3 GB is not worth copying, and a user
+    # upgrading from that layout should not download a gigabyte they already have.
+    legacy_root = os.environ.get("USERPROFILE")
+    if legacy_root:
+        candidates.append(os.path.join(legacy_root, "Transcriber", "models"))
+
     if getattr(sys, "frozen", False):
         candidates.append(os.path.join(os.path.dirname(sys.executable), "models"))
 
@@ -58,3 +65,30 @@ def get_model_candidates():
         if normalized not in unique_candidates:
             unique_candidates.append(normalized)
     return unique_candidates
+
+
+def get_runtime_dir():
+    """The private Python runtime the installer provisions.
+
+    It lives beside the models rather than inside the program folder so that an
+    upgrade, which replaces the program folder wholesale, never has to re-download
+    the multi-gigabyte GPU stack installed into it.
+    """
+    return os.path.join(get_user_data_dir(), "runtime")
+
+
+def get_runtime_python(windowed=False):
+    """The interpreter inside the provisioned runtime, if it has been installed."""
+    name = "pythonw.exe" if windowed else "python.exe"
+    if os.name != "nt":
+        name = "python"
+    return os.path.join(get_runtime_dir(), name)
+
+
+def get_state_dir():
+    """Records of what the installer has already done, so it can skip that work."""
+    return os.path.join(get_user_data_dir(), "state")
+
+
+def get_log_dir():
+    return os.path.join(get_user_data_dir(), "logs")

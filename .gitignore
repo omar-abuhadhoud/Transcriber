@@ -7,6 +7,9 @@ models
 testing_media
 recovery_tmp
 .transcriber_state
-*.spec.bak
 transcripts
 tests
+
+# Installer build output: the staged app payload and the compiled setup exe.
+installer/stage
+installer/build
