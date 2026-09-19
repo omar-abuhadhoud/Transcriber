@@ -105,7 +105,7 @@ class ProvisionError(Exception):
     """A failure the wizard should report and roll back from."""
 
 
-def stream(command, on_line=None):
+def stream(command, on_line=None, env=None, cwd=None):
     """Run a command, forwarding its output to the install log as it arrives.
 
     Output is streamed rather than collected so that a 2.5 GB pip download shows life
@@ -122,6 +122,8 @@ def stream(command, on_line=None):
         encoding="utf-8",
         errors="replace",
         creationflags=NO_WINDOW,
+        env=env,
+        cwd=cwd,
     )
 
     assert process.stdout is not None
@@ -235,6 +237,13 @@ def step_models(app_dir, wanted=None, force=False):
     engines = {name: engine for name, _label, engine in install_state._engine_instances()}
     span = 40.0 / max(1, len(rows))
 
+    # The download runs in a child interpreter, which does not inherit this process's
+    # sys.path, so the app folder has to be handed over explicitly or the child cannot
+    # import transcriber at all.
+    child_env = dict(os.environ)
+    inherited = child_env.get("PYTHONPATH")
+    child_env["PYTHONPATH"] = app_dir + (os.pathsep + inherited if inherited else "")
+
     for index, (name, label, installed, location) in enumerate(rows):
         base = 55 + span * index
 
@@ -245,11 +254,28 @@ def step_models(app_dir, wanted=None, force=False):
             continue
 
         progress(base, "Downloading " + label + " weights")
-        code = stream([sys.executable, "-u", "-c", DOWNLOAD_SCRIPT, name])
+
+        # Keep the child's last line so the failure reports what actually went wrong
+        # rather than blaming the network for every possible cause.
+        last_line = {"text": ""}
+
+        def remember(line, store=last_line):
+            if line.strip():
+                store["text"] = line.strip()
+
+        code = stream(
+            [sys.executable, "-u", "-c", DOWNLOAD_SCRIPT, name],
+            on_line=remember,
+            env=child_env,
+            cwd=app_dir,
+        )
         if code != 0:
+            detail = last_line["text"]
             raise ProvisionError(
-                "Could not download the weights for " + label + ". Check the internet "
-                "connection and run setup again; finished downloads are kept."
+                "Could not download the weights for " + label + ". "
+                + (detail + " " if detail else "")
+                + "Finished downloads are kept, so running setup again resumes where "
+                "it stopped."
             )
 
         engine = engines.get(name)
