@@ -741,6 +741,7 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Data: String;
+  Failed: String;
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
@@ -749,16 +750,28 @@ begin
   if not DirExists(Data) then
     Exit;
 
+  Failed := '';
+
+  { Nothing below touches UninstallProgressForm.
+
+    It used to set StatusLabel.Caption before each deletion. Those two lines ran only
+    when a box was ticked, and reaching back into the form here -- after its controls
+    were repurposed for the page above and it has finished its modal turn -- aborted
+    this procedure. The visible result was the exact opposite of what was asked for:
+    tick "delete the models" and the models survived, along with the logs below and the
+    entry in Add/Remove Programs, because nothing after the failing line ran.
+
+    Deleting what the user asked to delete must not depend on drawing a caption. }
   if DeleteModels then
   begin
-    UninstallProgressForm.StatusLabel.Caption := 'Deleting the speech models...';
-    DelTree(Data + '\models', True, True, True);
+    if not DelTree(Data + '\models', True, True, True) then
+      Failed := Failed + #13#10 + '    ' + Data + '\models';
   end;
 
   if DeleteRuntime then
   begin
-    UninstallProgressForm.StatusLabel.Caption := 'Deleting the GPU runtime...';
-    DelTree(RuntimeDir(), True, True, True);
+    if not DelTree(RuntimeDir(), True, True, True) then
+      Failed := Failed + #13#10 + '    ' + RuntimeDir();
   end;
 
   DelTree(Data + '\logs', True, True, True);
@@ -776,4 +789,12 @@ begin
   { Removed only if empty, so anything kept stays exactly where it was. }
   RemoveDir(Data + '\state');
   RemoveDir(Data);
+
+  { Said out loud, because a silent failure here is how gigabytes survive an uninstall
+    that the user believed had removed them. }
+  if Failed <> '' then
+    MsgBox('Transcriber was removed, but these could not be deleted:' + #13#10 +
+           Failed + #13#10 + #13#10 +
+           'Something is usually still holding them open. Restart and delete the ' +
+           'folder by hand to reclaim the space.', mbError, MB_OK);
 end;
