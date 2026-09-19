@@ -1,9 +1,19 @@
-arabic-reshaper==3.0.0
+# torch CUDA builds only exist on PyTorch's own index; the +cu129 pin keeps pip
+# from silently resolving the CPU-only wheel from PyPI.
+--extra-index-url https://download.pytorch.org/whl/cu129
+
+# UI
 customtkinter==5.2.2
-faster-whisper==1.2.1
-huggingface_hub==1.4.1
+
+# Media
+av==18.1.0
 mutagen==1.47.0
-nvidia-cublas-cu12
-nvidia-cuda-runtime-cu12
-nvidia-cudnn-cu12
-python-bidi==0.6.7
+
+# Qwen3-ASR engines
+accelerate>=1.0.0
+huggingface_hub>=1.4.1
+torch==2.9.0+cu129
+transformers>=5.13.0
+
+# Silero VAD (transcriber/assets/silero_vad_v6.onnx) used to split long audio
+onnxruntime>=1.20

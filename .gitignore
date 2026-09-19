@@ -6,5 +6,7 @@ dist
 models
 testing_media
 recovery_tmp
-.transcriptor_state
+.transcriber_state
 *.spec.bak
+transcripts
+tests

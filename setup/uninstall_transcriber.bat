@@ -1,11 +1,11 @@
 @echo off
 setlocal
 
-set "INSTALL_DIR=%USERPROFILE%\Transcriptor"
-set "DESKTOP_SHORTCUT=%USERPROFILE%\Desktop\Transcriptor.lnk"
-set "LOG_DIR=%LOCALAPPDATA%\Transcriptor"
+set "INSTALL_DIR=%USERPROFILE%\Transcriber"
+set "DESKTOP_SHORTCUT=%USERPROFILE%\Desktop\Transcriber.lnk"
+set "LOG_DIR=%LOCALAPPDATA%\Transcriber"
 
-echo Transcriptor uninstaller
+echo Transcriber uninstaller
 echo.
 
 if /I "%INSTALL_DIR%"=="%USERPROFILE%" (
@@ -22,7 +22,7 @@ if /I "%INSTALL_DIR%"=="C:\" (
 
 tasklist /FI "IMAGENAME eq Transcriber.exe" | find /I "Transcriber.exe" >nul 2>nul
 if not errorlevel 1 (
-    echo Closing running Transcriptor app...
+    echo Closing running Transcriber app...
     taskkill /IM Transcriber.exe /F >nul 2>nul
     timeout /t 2 /nobreak >nul
 )
@@ -48,6 +48,6 @@ if exist "%INSTALL_DIR%" (
 )
 
 echo.
-echo Transcriptor was removed.
+echo Transcriber was removed.
 echo Python, Git, and NVIDIA drivers were left installed because other apps may use them.
 pause

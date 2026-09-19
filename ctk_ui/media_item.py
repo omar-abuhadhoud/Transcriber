@@ -1,17 +1,10 @@
 import customtkinter as ctk
-import threading
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 import os
-import queue
-import time
-import transcribe_module
-from util import Util
+from transcriber.util import Util
 import global_vars
-import textwrap
-import arabic_reshaper
-from bidi.algorithm import get_display
 import tempfile
-from stopwatch import StopWatchLabel
+from ctk_ui.stopwatch import StopWatchLabel
 
 class MediaItem(ctk.CTkFrame):
     """
