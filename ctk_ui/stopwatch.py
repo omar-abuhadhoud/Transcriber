@@ -29,7 +29,10 @@ class StopWatchLabel(ctk.CTkLabel):
 
     def reset(self):
         self.seconds = 0
-        self.configure(text="00:00")
+        # A row can be cancelled and torn down in the same breath, and configuring a
+        # destroyed label raises out of whatever thread's callback got here first.
+        if self.winfo_exists():
+            self.configure(text="00:00")
 
     def update_timer(self):
         # 1. Check if we should keep running

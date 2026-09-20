@@ -2,6 +2,10 @@
 
 GPU-first desktop transcription app for Arabic media files, powered by Qwen3-ASR.
 
+Two tabs: a **Transcription Queue** for files already on the machine, and a **Download**
+page that pulls the audio out of an Instagram, Facebook, TikTok or YouTube link and adds
+it to that queue.
+
 ## Install
 
 Download `TranscriberSetup-<version>.exe` from the
@@ -47,9 +51,13 @@ Set `TRANSCRIBER_NO_UPDATE_CHECK=1` to stop the app contacting GitHub at startup
 Uninstall from **Settings → Apps**, or run `unins000.exe` in the install folder.
 
 The uninstaller asks what to do with the downloaded data, with separate boxes for the
-speech models and the GPU runtime, showing each one's measured size. Both default to
-**keeping** the data, so an uninstall never silently discards a 10 GB download and a
-later reinstall starts immediately. Logs, settings and recovery files always go.
+speech models, the GPU runtime and the audio saved from links, showing each one's
+measured size. All three default to **keeping** the data, so an uninstall never silently
+discards a 10 GB download and a later reinstall starts immediately. Logs, settings and
+recovery files always go.
+
+The audio box matters most of the three: models and runtimes can always be downloaded
+again, but a reel that has since been deleted cannot.
 
 ## Releasing a new version
 
@@ -104,6 +112,173 @@ py -3.11 -m venv .venv
 Model weights download on first use into `%LOCALAPPDATA%\Transcriber\models`. A checkout
 is not a managed install, so the app links to the releases page instead of offering to
 update itself.
+
+## Downloading from a link
+
+The **Download** tab shows one square per platform. Click one, paste a link, press
+Download. When the file lands it appears on the queue tab as an ordinary row, at rest,
+and a notification says so — nothing starts transcribing by itself, because a download
+finishing is not a decision to occupy the GPU.
+
+Files are saved per platform, named after the video's title or caption:
+
+```
+%LOCALAPPDATA%\Transcriber\downloads\YouTube\Me at the zoo.m4a
+%LOCALAPPDATA%\Transcriber\downloads\Instagram\كيف تتعلم البرمجة بسرعة.m4a
+```
+
+Captions are not filenames, so `downloader/naming.py` strips what Windows forbids,
+escapes reserved device names like `CON`, cuts long captions on a word boundary and
+appends a counter when two posts share a caption. Non-ASCII is deliberately kept — most
+titles here are Arabic, and stripping them would name every file the same thing.
+
+### Only the audio, and never re-encoded
+
+Nothing is ever transcoded. YouTube publishes a real audio-only stream, which is taken
+as it is. Instagram, Facebook and TikTok only serve a muxed MP4, so `downloader/remux.py`
+copies the audio packets into their own container and drops the video track — a packet
+copy, not a decode, which takes a few milliseconds and loses nothing. It uses PyAV,
+already a dependency for transcription, so there is still no ffmpeg binary in the install.
+
+Re-encoding everything to MP3 would cost minutes of CPU per file and buy nothing:
+transcription decodes with PyAV, which reads all of these already.
+
+### The smallest stream that is still good for speech
+
+Platforms offer the same audio at several bitrates, and the app asks for the smallest
+one above `SPEECH_BITRATE_CAP` (80 kbps) rather than the best. Everything downloaded
+here is about to be resampled to 16 kHz mono and handed to an ASR model, which cannot
+tell a 49 kbps stream from a 130 kbps one — so "best audio" would spend two and a half
+times the bandwidth on data discarded a moment later.
+
+Measured on YouTube, projected over five hours of audio:
+
+| Selector | itag | Bitrate | 5 hours |
+| --- | --- | --- | --- |
+| `bestaudio[ext=m4a]` (what "best" means) | 140 | 130 kbps | 279 MB |
+| what the app asks for | 139 | 49 kbps | **105 MB** |
+
+If you want the audio to keep and listen to rather than only to transcribe, set
+`best_quality=True` on `DownloadOptions` and the selector asks for the largest stream
+instead. The fallback chain ends in plain `bestaudio/best`, so a platform that
+advertises no bitrate at all — Instagram and TikTok usually do not — is unaffected.
+
+### Long recordings
+
+A five-hour YouTube video is about 105 MB of audio and downloads as one continuous
+stream. Four things make that survivable:
+
+- **Resume, not restart.** `continuedl` is on and the part-file is named after the
+  post's id, so a connection dropped four hours in continues from where it stopped
+  rather than starting again. Retries are raised to 10 for the same reason.
+- **Range requests.** `http_chunk_size` is 10 MB, which keeps YouTube from throttling
+  a single long-lived socket down to a trickle.
+- **Progress stays responsive.** yt-dlp calls its progress hook thousands of times on
+  a file that size; the pool collapses those to ten UI updates a second, so the window
+  is not spending its time redrawing a label.
+- **It never blocks anything.** It occupies one of the four slots and one of YouTube's
+  two, so short downloads queued behind it still run, and transcription is untouched.
+
+If a single large file is still the bottleneck, the one remaining lever is opening
+several connections to it, which needs an external downloader:
+
+```bat
+winget install aria2.aria2
+set TRANSCRIBER_USE_ARIA2=1
+```
+
+With that set, yt-dlp hands the transfer to aria2c with 16 connections. It is opt-in
+rather than automatic because progress reporting through an external downloader is much
+coarser — a good trade for a five-hour recording, a bad one for a reel.
+
+Worth saying plainly: for a five-hour file the download is not the slow part.
+Transcribing five hours of audio on the GPU takes far longer than fetching 105 MB, and
+that is the number to optimise if the wait matters.
+
+### How many at once
+
+| Limit | Default | Override |
+| --- | --- | --- |
+| Downloads transferring at once | 4 | `TRANSCRIBER_MAX_DOWNLOADS` |
+| Downloads from one platform | 2 | `TRANSCRIBER_MAX_PER_PLATFORM` |
+| Fragments fetched per download | 8 | `FRAGMENTS_AT_ONCE` in `downloader/ytdlp.py` |
+
+Anything above the limits waits in its platform's queue and starts when a slot frees.
+The per-platform cap exists because Instagram and TikTok answer a burst with HTTP 429.
+
+It is enforced by giving each platform its own two-worker executor plus a global
+semaphore, rather than by taking a second lock inside one shared pool. That distinction
+matters: with four shared workers and a per-platform semaphore, four queued Reels would
+occupy every worker and block, and a YouTube link queued behind them would never start.
+
+Downloads are threads, not processes. They wait on sockets, so they hold no GIL, and
+four extra interpreters would cost a second of startup each for nothing. They never
+import torch and never open a CUDA context, so they cannot contend with a transcription
+for VRAM — the one resource in this app that is genuinely scarce.
+
+### Posts that need a login
+
+Instagram and Facebook serve very little to a logged-out client. Tick **Use my browser
+login** in the download box and pick a browser, and yt-dlp borrows that browser's
+session. Chrome and Edge encrypt their cookie store while running, so close them first —
+Firefox is the one that reliably works.
+
+### Adding a platform
+
+`downloader/base.py` defines `MediaDownloader`, which has exactly one abstract method:
+
+```python
+def download_audio(self, url, options=None, progress_callback=None, check_cancel=None)
+```
+
+A provider is a class with that method plus four attributes — `name`, `label`,
+`folder_name`, and the `url_patterns` that are its own. Everything else (fetching,
+naming, progress, cancellation, error translation) lives in `downloader/ytdlp.py`, so an
+adapter is usually thirty lines. Register it in `PROVIDERS` in `downloader/registry.py`
+and the tile appears on the page by itself: the page is built from the registry and
+names no platform anywhere.
+
+Nothing under `downloader/` knows what a platform looks like. Colours, icons,
+placeholder links and help text live in `ctk_ui/provider_style.py`, and
+`view_for(provider)` pairs an adapter with its styling to produce the flat object the
+widgets read. The split is deliberate:
+
+- `downloader/` is imported by the installer, which has no Tk and no window, so a hex
+  colour sitting on an adapter class is dead weight there;
+- an adapter should be usable from a script or a different front end without dragging
+  a palette along;
+- restyling the UI should not touch a single file under `downloader/`.
+
+A platform with no entry in `STYLES` still works — it falls back to `DEFAULT_STYLE`, so
+registering the adapter is enough to get a usable tile, and choosing its colours is a
+separate, optional step.
+
+Pasting a link into the wrong tile is caught as you type — the registry recognises which
+platform a URL belongs to, so the box says which tile you wanted instead of failing a
+minute later.
+
+### About the tile icons
+
+The marks on the tiles are original generic glyphs — a play triangle, a camera, a music
+note, a speech bubble — on each platform's familiar colour, with its name underneath.
+They are not the platforms' logos, which are registered trademarks this project has no
+licence to redraw. If you hold that licence, drop a square PNG at
+`ctk_ui/assets/providers/<name>.png` and it is used instead, with no code change.
+
+The glyphs are keyed by shape (`play`, `camera`, `note`, `bubble`) rather than by
+platform, so two platforms can share a mark and a new one can pick an existing shape by
+naming it in `provider_style.py`.
+
+### Keeping downloads working
+
+`yt-dlp` is pinned with a floor rather than an exact version, on purpose. These sites
+change what they serve every few weeks and yt-dlp tracks them release by release, so a
+hard pin is a promise that downloads stop working a few months after the build. If a
+platform breaks, updating yt-dlp inside the runtime is usually the whole fix:
+
+```bat
+%LOCALAPPDATA%\Transcriber\runtime\python.exe -m pip install -U yt-dlp
+```
 
 ## Transcription engines
 
@@ -190,6 +365,7 @@ and downloads whatever is missing.
 | `%LOCALAPPDATA%\Programs\Transcriber` | The program | Replaced |
 | `%LOCALAPPDATA%\Transcriber\runtime` | Python + PyTorch | Kept |
 | `%LOCALAPPDATA%\Transcriber\models` | Model weights | Kept |
+| `%LOCALAPPDATA%\Transcriber\downloads` | Audio saved from links, one folder per platform | Kept |
 | `%LOCALAPPDATA%\Transcriber\state` | What is installed | Kept |
 | `%LOCALAPPDATA%\Transcriber\logs` | Setup and crash logs | Kept |
 

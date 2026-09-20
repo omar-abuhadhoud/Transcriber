@@ -53,7 +53,8 @@ $AppPayload = @(
     'icon.ico',
     'requirements.txt',
     'ctk_ui',
-    'transcriber'
+    'transcriber',
+    'downloader'
 )
 
 $version = Get-AppVersion

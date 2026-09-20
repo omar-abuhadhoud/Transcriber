@@ -71,3 +71,33 @@ def option_menu(master, **kwargs):
     settings = dict(width=190, height=35, corner_radius=8, font=ui_font(13))
     settings.update(kwargs)
     return StyledOptionMenu(master, **settings)
+
+
+# --- accents -----------------------------------------------------------------------
+#
+# The blues CustomTkinter's own theme uses for a button, named so the tab strip and the
+# notifications can match the buttons rather than approximating them.
+
+ACCENT = "#1f6aa5"
+ACCENT_HOVER = "#144870"
+
+SUCCESS = "#2ecc71"
+SUCCESS_DIM = "#27ae60"
+DANGER = "#c0392b"
+MUTED = "gray"
+
+# --- tab strip ---------------------------------------------------------------------
+
+TAB_BAR_FG = ("gray86", "gray17")
+TAB_INACTIVE_TEXT = ("gray35", "gray70")
+TAB_HOVER = ("gray78", "gray25")
+
+# --- notifications -----------------------------------------------------------------
+#
+# The toast sits over the page, so it needs its own surface colour rather than the
+# frame grey it would otherwise blend into.
+
+TOAST_FG = ("gray92", "gray20")
+TOAST_BORDER = ("gray70", "gray32")
+TOAST_TEXT = ("gray10", "gray92")
+TOAST_DETAIL = ("gray35", "gray65")

@@ -85,6 +85,16 @@ def get_runtime_python(windowed=False):
     return os.path.join(get_runtime_dir(), name)
 
 
+def get_download_dir():
+    """Root for audio pulled off Instagram, Facebook, TikTok and YouTube.
+
+    Beside the models rather than inside the program folder: an update replaces the
+    program folder wholesale, and media the user downloaded must not vanish with it.
+    Each provider owns a subfolder under here, named after itself.
+    """
+    return os.path.join(get_user_data_dir(), "downloads")
+
+
 def get_state_dir():
     """Records of what the installer has already done, so it can skip that work."""
     return os.path.join(get_user_data_dir(), "state")

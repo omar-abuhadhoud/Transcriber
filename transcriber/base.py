@@ -88,5 +88,9 @@ class TranscriptionEngine(ABC):
         decoded since the previous call. Engines that cannot report mid-file progress
         may call it once with (1.0, full_text).
         status_callback(message) reports human-readable stage changes.
-        check_cancel() is polled between chunks; a truthy result aborts the run.
+        check_cancel() is polled between chunks, and by engines that can manage it
+        during decoding too; a truthy result aborts the run as soon as it is seen.
+        An engine that aborts must release what the run was using (release_cache)
+        before it returns, because a cancelled run is exactly when someone is waiting
+        for that memory.
         """

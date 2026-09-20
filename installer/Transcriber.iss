@@ -151,6 +151,14 @@ begin
   Result := DataDir() + '\models\' + Subdir;
 end;
 
+{ Audio pulled from Instagram, Facebook, TikTok and YouTube, one folder per platform.
+  Unlike the models and the runtime this is not re-downloadable -- the post it came
+  from may be gone -- so the uninstaller offers it as its own choice. }
+function DownloadsDir(): String;
+begin
+  Result := DataDir() + '\downloads';
+end;
+
 { ---------------------------------------------------------------- detection ----- }
 
 { Display-only mirror of the app's own rule (config.json plus any .safetensors).
@@ -573,9 +581,11 @@ var
   RemovePage: TNewNotebookPage;
   KeepModelsCheck: TNewCheckBox;
   KeepRuntimeCheck: TNewCheckBox;
+  KeepDownloadsCheck: TNewCheckBox;
   ContinueButton: TNewButton;
   DeleteModels: Boolean;
   DeleteRuntime: Boolean;
+  DeleteDownloads: Boolean;
 
 { Recursive size of a folder, in megabytes, so the uninstaller can state what it is
   actually offering to delete instead of quoting a number from the documentation. }
@@ -623,22 +633,26 @@ var
   SavedName, SavedDescription: String;
   SavedCancelEnabled: Boolean;
   SavedCancelResult: Integer;
-  ModelsMb, RuntimeMb: Integer;
-  ModelsDir, RuntimeFolder: String;
+  ModelsMb, RuntimeMb, DownloadsMb: Integer;
+  ModelsDir, RuntimeFolder, DownloadsFolder: String;
 begin
   DeleteModels := False;
   DeleteRuntime := False;
+  DeleteDownloads := False;
 
   if UninstallSilent then
     Exit;
 
   ModelsDir := DataDir() + '\models';
   RuntimeFolder := RuntimeDir();
-  if not DirExists(ModelsDir) and not DirExists(RuntimeFolder) then
+  DownloadsFolder := DownloadsDir();
+  if not DirExists(ModelsDir) and not DirExists(RuntimeFolder) and
+     not DirExists(DownloadsFolder) then
     Exit;
 
   ModelsMb := DirSizeMb(ModelsDir);
   RuntimeMb := DirSizeMb(RuntimeFolder);
+  DownloadsMb := DirSizeMb(DownloadsFolder);
 
   RemovePage := TNewNotebookPage.Create(UninstallProgressForm);
   RemovePage.Notebook := UninstallProgressForm.InnerNotebook;
@@ -684,18 +698,33 @@ begin
   else
     KeepRuntimeCheck.Caption := 'GPU runtime (not installed)';
 
+  KeepDownloadsCheck := TNewCheckBox.Create(UninstallProgressForm);
+  KeepDownloadsCheck.Parent := RemovePage;
+  KeepDownloadsCheck.Left := Intro.Left;
+  KeepDownloadsCheck.Top := KeepRuntimeCheck.Top + ScaleY(26);
+  KeepDownloadsCheck.Width := Intro.Width;
+  KeepDownloadsCheck.Height := ScaleY(20);
+  KeepDownloadsCheck.Checked := False;
+  KeepDownloadsCheck.Enabled := DirExists(DownloadsFolder);
+  if KeepDownloadsCheck.Enabled then
+    KeepDownloadsCheck.Caption := 'Also delete the audio downloaded from links (' +
+                                  SizeCaption(DownloadsMb) + ')'
+  else
+    KeepDownloadsCheck.Caption := 'Downloaded audio (none)';
+
   Note := TNewStaticText.Create(UninstallProgressForm);
   Note.Parent := RemovePage;
   Note.Left := Intro.Left;
-  Note.Top := KeepRuntimeCheck.Top + ScaleY(34);
+  Note.Top := KeepDownloadsCheck.Top + ScaleY(34);
   Note.Width := Intro.Width;
   Note.Height := ScaleY(44);
   Note.AutoSize := False;
   Note.WordWrap := True;
   Note.ShowAccelChar := False;
   Note.Caption := 'Leaving these in place means a future install of Transcriber ' +
-                  'finds them and starts without downloading anything. They are in ' +
-                  DataDir() + '.';
+                  'finds them and starts without downloading anything. Audio saved ' +
+                  'from a link cannot be fetched again once the post is gone. ' +
+                  'Everything is in ' + DataDir() + '.';
 
   SavedName := UninstallProgressForm.PageNameLabel.Caption;
   SavedDescription := UninstallProgressForm.PageDescriptionLabel.Caption;
@@ -727,6 +756,7 @@ begin
 
   DeleteModels := KeepModelsCheck.Enabled and KeepModelsCheck.Checked;
   DeleteRuntime := KeepRuntimeCheck.Enabled and KeepRuntimeCheck.Checked;
+  DeleteDownloads := KeepDownloadsCheck.Enabled and KeepDownloadsCheck.Checked;
 
   { Hand the form back the way it was, or the removal progress that follows is drawn
     onto our page with a Next button still sitting on it. }
@@ -774,6 +804,12 @@ begin
       Failed := Failed + #13#10 + '    ' + RuntimeDir();
   end;
 
+  if DeleteDownloads then
+  begin
+    if not DelTree(DownloadsDir(), True, True, True) then
+      Failed := Failed + #13#10 + '    ' + DownloadsDir();
+  end;
+
   DelTree(Data + '\logs', True, True, True);
   DelTree(Data + '\recovery_tmp', True, True, True);
   DeleteFile(Data + '\state\setup-progress.txt');
@@ -788,6 +824,7 @@ begin
 
   { Removed only if empty, so anything kept stays exactly where it was. }
   RemoveDir(Data + '\state');
+  RemoveDir(Data + '\downloads');
   RemoveDir(Data);
 
   { Said out loud, because a silent failure here is how gigabytes survive an uninstall

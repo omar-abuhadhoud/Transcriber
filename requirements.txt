@@ -9,6 +9,18 @@ customtkinter==5.2.2
 av==18.1.0
 mutagen==1.47.0
 
+# Link downloads (Instagram, Facebook, TikTok, YouTube).
+#
+# Deliberately a floor rather than a pin. These sites change what they serve every few
+# weeks and yt-dlp tracks them release by release, so a pin here is a promise that
+# downloads will stop working a few months after the build. Only the major-version
+# boundary is guarded.
+yt-dlp>=2026.8.19
+
+# Pillow draws the provider marks on the download tiles, and CTkImage needs it to
+# scale them for high-DPI displays.
+pillow>=11.0
+
 # Qwen3-ASR engines
 accelerate>=1.0.0
 huggingface_hub>=1.4.1

@@ -1,28 +1,43 @@
-import customtkinter as ctk
-import threading
-from tkinter import filedialog, messagebox
+"""The window: an update bar, a tab strip, and whichever page is showing.
+
+The app used to be the transcription queue. It is now a shell over two pages, and it
+deliberately owns very little: the window, the update banner, the notifications, and
+the closing sequence. The queue page owns transcription, the download page owns
+downloading, and the only thing that crosses between them is a finished download
+arriving as a new row on the queue.
+
+Both pages are built at startup and stay built. Switching tabs grids one and ungrids
+the other, so a download keeps running while the queue is on screen and the queue's
+worker keeps going while someone is pasting a link.
+"""
+
 import os
-import queue
+import sys
+import threading
 import time
 import traceback
-import sys
 from datetime import datetime
-from transcriber import transcribe_module
-from transcriber import registry
-from transcriber.paths import get_log_dir, resource_path
-from transcriber.speed import evaluate_tiers, get_total_vram_gb
-from transcriber.version import __version__
-from ctk_ui.media_item import MediaItem
-from ctk_ui import theme
-from ctk_ui.speed_picker import SpeedPicker
-from ctk_ui.theme import ui_font
-from ctk_ui.stopwatch import StopWatchLabel
+from tkinter import messagebox
+
+import customtkinter as ctk
+
 import global_vars
+from ctk_ui import theme
+from ctk_ui.download_page import DownloadPage
+from ctk_ui.queue_page import QueuePage
+from ctk_ui.tabs import TabBar
+from ctk_ui.theme import ui_font
+from ctk_ui.toast import ToastHost
+from transcriber.paths import get_log_dir, resource_path
 from transcriber.util import Util
+from transcriber.version import __version__
 
 # --- CONFIGURATION ---
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
+
+QUEUE_TAB = "queue"
+DOWNLOAD_TAB = "download"
 
 
 def app_base_dir():
@@ -43,10 +58,10 @@ def log_runtime_error(message, exc=None):
         if exc is not None:
             log_file.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
 
+
 class TranscriberQueueApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-
 
         os.makedirs(global_vars.rec_folder, exist_ok=True)
 
@@ -54,102 +69,28 @@ class TranscriberQueueApp(ctk.CTk):
         self.title(f"Transcriber {__version__}")
         self.iconbitmap(resource_path("icon.ico"))
         self.after(0, lambda: self.state('zoomed'))
-        self.minsize(600, 400)
-        self.grid_rowconfigure(2, weight=1) # Scroll area expands
+        self.minsize(820, 520)
+        self.grid_rowconfigure(2, weight=1)  # The page area expands
         self.grid_columnconfigure(0, weight=1)
-
-             # --- VARIABLES ---
-        self.items = []
-        self.job_queue = queue.Queue()
-        self.total_duration=0
-
 
         # --- 0. UPDATE BANNER (row 0, hidden until a newer release is found) ---
         self.build_update_banner()
 
-        # --- 1. HEADER ---
-        self.header_frame = ctk.CTkFrame(self)
-        self.header_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=10)
-
-        # 1. Add Button (Fixed width, Left side)
-        self.btn_add = ctk.CTkButton(
-            self.header_frame,
-            text="+ Add Media Files",
-            command=self.add_files,
-            font=ui_font(13, "bold"),
-            width=140,
-            height=35
+        # --- 1. TABS ---
+        self.tab_bar = TabBar(
+            self,
+            tabs=[(QUEUE_TAB, "Transcription Queue"), (DOWNLOAD_TAB, "Download")],
+            command=self.show_tab,
         )
-        self.btn_add.pack(side="left", padx=(0, 15))
+        self.tab_bar.grid(row=1, column=0, sticky="w", padx=20, pady=(10, 0))
 
-        # 1b. Engine picker. Switching is only allowed while the queue is idle, so a
-        # run never spans two models.
-        self.engine_labels = [label for _, label in registry.list_engines()]
-        # Built through the shared helper so this and the speed picker beside it match
-        # in the closed button and in the open list.
-        self.engine_menu = theme.option_menu(
-            self.header_frame,
-            values=self.engine_labels,
-            command=self.on_engine_selected,
-        )
-        self.engine_menu.set(registry.label_for(registry.active_engine_name()))
-        self.engine_menu.pack(side="left", padx=(0, 8))
+        # --- 2. PAGES ---
+        self.build_pages()
 
-        # 1c. Speed picker. Tiers this GPU cannot afford are disabled, not hidden.
-        self.speed_picker = SpeedPicker(self.header_frame, on_change=self.on_speed_selected)
-        self.speed_picker.pack(side="left", padx=(0, 15))
-        self.refresh_speed_tiers()
+        # --- 3. NOTIFICATIONS, over everything ---
+        self.toasts = ToastHost(self)
+        self.toasts.place_in_corner()
 
-        # 4. Total Duration Label (Fixed width, Far Right)
-        formatted_time = Util.format_duration(self.total_duration)
-        self.lbl_total_duration = ctk.CTkLabel(
-            self.header_frame,
-            text=f'Total: {formatted_time}',
-            text_color="gray",
-            font=ui_font(12)
-        )
-        self.lbl_total_duration.pack(side="right", padx=(20, 0))
-
-        # 3. Counter Label (e.g., "12/50") - Fixed width, Right of bar
-        self.lbl_progress_count = ctk.CTkLabel(
-            self.header_frame,
-            text="",
-            font=ui_font(12, "bold"),
-            text_color=("gray10", "gray90") # Adaptive color for light/dark mode
-        )
-        self.lbl_progress_count.pack(side="right", padx=(5, 15))
-
-        # 2. Progress Bar (Flexible width, Middle - fills remaining space)
-        self.progress_bar = ctk.CTkProgressBar(self.header_frame, height=12)
-        self.progress_bar.pack(side="left", fill="x", expand=True, padx=5)
-        self.progress_bar.pack_forget()  # Hide initially
-
-        self.progress_bar.set(0) # Start empty
-
-
-
-        # --- 2. SCROLLABLE QUEUE AREA ---
-        self.scroll_area = ctk.CTkScrollableFrame(self, label_text="Transcription Queue")
-        self.scroll_area.grid(row=2, column=0, sticky="nsew", padx=20, pady=5)
-        self.scroll_area.grid_columnconfigure(0, weight=1) # Items expand width
-
-        # --- 3. GLOBAL FOOTER ---
-        self.footer = ctk.CTkFrame(self)
-        self.footer.grid(row=3, column=0, sticky="ew", padx=20, pady=20)
-
-        self.btn_save_all = ctk.CTkButton(self.footer, text="Save All Finished", command=self.save_all_finished)
-        self.btn_save_all.pack(side="left", padx=10, pady=10)
-
-        self.btn_stop_all = ctk.CTkButton(self.footer, text="Stop All", command=self.stop_all, fg_color="#c0392b")
-        self.btn_stop_all.pack(side="right", padx=10)
-
-        self.btn_start_all = ctk.CTkButton(self.footer, text="Start All Pending", command=self.start_all_pending, fg_color="green")
-        self.btn_start_all.pack(side="right", padx=10)
-
-
-
-        # Start the background worker
-        self.start_worker_thread()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # Optimize window state changes
@@ -157,10 +98,73 @@ class TranscriberQueueApp(ctk.CTk):
 
         self.start_update_check()
 
+    # ------------------------------------------------------------------- the pages
 
-    def start_worker_thread(self):
-        self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)
-        self.worker_thread.start()
+    def build_pages(self):
+        self.queue_page = QueuePage(self, log_error=log_runtime_error)
+        self.download_page = DownloadPage(
+            self,
+            on_downloaded=self.on_download_finished,
+            on_failed=self.on_download_failed,
+            on_counts_changed=self.on_download_counts_changed,
+        )
+
+        self.pages = {QUEUE_TAB: self.queue_page, DOWNLOAD_TAB: self.download_page}
+        for page in self.pages.values():
+            page.grid(row=2, column=0, sticky="nsew")
+            page.grid_remove()
+
+        self.show_tab(self.tab_bar.active or QUEUE_TAB)
+
+    def show_tab(self, key):
+        # Called by the tab bar during its own construction, before the pages exist.
+        for name, page in getattr(self, "pages", {}).items():
+            if name == key:
+                page.grid()
+            else:
+                page.grid_remove()
+
+        # The toast stack is placed rather than gridded, so a page shown afterwards
+        # would otherwise be drawn over it.
+        if hasattr(self, "toasts"):
+            self.toasts.lift()
+
+    # -------------------------------------------------------------- download events
+
+    def on_download_finished(self, result):
+        """A download landed: put it in the queue and say so."""
+        try:
+            self.queue_page.add_downloaded(result)
+        except Exception as exc:
+            log_runtime_error("Could not queue the downloaded file " + str(result.path), exc)
+            self.toasts.show(
+                "Downloaded, but not queued",
+                str(exc),
+                kind="error",
+            )
+            return
+
+        duration = Util.format_duration(result.duration)
+        self.toasts.show(
+            result.title,
+            "Downloaded from " + result.provider_label
+            + (" (" + duration + ")" if result.duration else "")
+            + " and added to the transcription queue.",
+            kind="success",
+            # Clicking the notification takes you to the row it is talking about.
+            on_click=lambda: self.tab_bar.select(QUEUE_TAB),
+        )
+
+    def on_download_failed(self, job):
+        self.toasts.show(
+            job.provider_label + " download failed",
+            job.error,
+            kind="error",
+            timeout=12000,
+        )
+
+    def on_download_counts_changed(self, count):
+        self.tab_bar.set_badge(DOWNLOAD_TAB, count)
 
     # ----------------------------------------------------------------- updates
 
@@ -168,7 +172,7 @@ class TranscriberQueueApp(ctk.CTk):
         """A strip above the header, shown only when a newer release exists."""
         self.pending_update = None
 
-        self.update_banner = ctk.CTkFrame(self, fg_color="#1f6aa5")
+        self.update_banner = ctk.CTkFrame(self, fg_color=theme.ACCENT)
         self.update_banner.grid(row=0, column=0, sticky="ew", padx=20, pady=(10, 0))
         self.update_banner.grid_remove()
 
@@ -197,7 +201,7 @@ class TranscriberQueueApp(ctk.CTk):
             width=110,
             height=28,
             fg_color="white",
-            text_color="#1f6aa5",
+            text_color=theme.ACCENT,
             hover_color="#e0e0e0",
             command=self.on_update_clicked,
         )
@@ -236,10 +240,17 @@ class TranscriberQueueApp(ctk.CTk):
         if not self.pending_update:
             return
 
-        if self.queue_is_busy():
+        if self.queue_page.queue_is_busy():
             messagebox.showinfo(
                 "Update",
-                "Finish or stop the current transcriptions first, then update.",
+                "Finish or cancel the current transcriptions first, then update.",
+            )
+            return
+
+        if self.download_page.pool.active_count():
+            messagebox.showinfo(
+                "Update",
+                "Wait for the downloads to finish, or cancel them, then update.",
             )
             return
 
@@ -300,147 +311,9 @@ class TranscriberQueueApp(ctk.CTk):
         """
         if event.widget is not self:
             return
-        if self.items:
-            self.after(100, self.update_total_progress)
+        self.queue_page.refresh_after_restore()
 
-
-
-
-    def update_total_duration_label(self):
-        self.lbl_total_duration.configure(text=f'Total Duration: {Util.format_duration(self.total_duration)}')
-
-
-    def add_files(self):
-        file_paths = filedialog.askopenfilenames(filetypes=[("Media Files", "*.mp3 *.mp4 *.wav *.m4a *.mkv")])
-        if not file_paths:
-            return
-
-        for path in file_paths:
-            item = MediaItem(self.scroll_area, path, self,on_delete_click=self.delete_item)
-            item.pack(fill="x", pady=2, padx=5)
-            self.items.append(item)
-            self.total_duration=self.total_duration+item.durationInSeconds
-
-        # Refreshed once for the whole selection: these scan every row, so doing it per
-        # file makes adding N files cost O(N^2).
-        self.update_total_duration_label()
-        self.progress_bar.pack(side="left", fill="x", expand=True, padx=5)
-        self.update_total_progress()
-
-
-
-    # --- ENGINE AND SPEED SELECTION ---
-    def refresh_speed_tiers(self):
-        """Recompute affordable tiers. Engines differ in weight size, so this runs per engine."""
-        weights_gb = registry.weights_gb_for(registry.active_engine_name())
-        statuses = evaluate_tiers(weights_gb)
-
-        current = registry.active_tier_name()
-        chosen = next((s for s in statuses if s.tier.name == current), None)
-        if chosen is None or not chosen.available:
-            # The tier that fit the previous engine may not fit this one.
-            fallback = next((s for s in statuses if s.recommended), None)
-            fallback = fallback or next((s for s in statuses if s.available), statuses[0])
-            registry.set_speed(fallback.tier.name)
-            current = fallback.tier.name
-
-        self.speed_picker.set_statuses(statuses, current)
-
-    def on_speed_selected(self, tier_name):
-        try:
-            registry.set_speed(tier_name)
-        except Exception as e:
-            log_runtime_error(f"Could not select speed '{tier_name}'", e)
-            messagebox.showerror("Speed", f"Could not change speed:\n{e}")
-            self.refresh_speed_tiers()
-
-    def on_engine_selected(self, label):
-        name = registry.name_for_label(label)
-        if name == registry.active_engine_name():
-            return
-
-        try:
-            registry.set_engine(name)
-            self.refresh_speed_tiers()
-        except Exception as e:
-            log_runtime_error(f"Could not switch to engine '{name}'", e)
-            messagebox.showerror("Engine", f"Could not switch engine:\n{e}")
-            self.engine_menu.set(registry.label_for(registry.active_engine_name()))
-
-    def queue_is_busy(self):
-        return any(item.state in ["waiting", "processing", "stopping"] for item in self.items)
-
-    def update_engine_menu_state(self):
-        if not self.engine_menu.winfo_exists(): return
-        idle = not self.queue_is_busy()
-        self.engine_menu.configure(state="normal" if idle else "disabled")
-        self.speed_picker.set_enabled(idle)
-
-    # --- QUEUE MANAGEMENT ---
-    def add_to_queue(self, media_item):
-        self.job_queue.put(media_item)
-        self.update_engine_menu_state()
-
-    def start_all_pending(self):
-        for item in self.items:
-            if item.state in ["idle", "stopped", "error"]:
-                item.request_start()
-
-    def stop_all(self):
-        # Mark all items to stop
-        for item in self.items:
-            if item.state in ["waiting", "processing"]:
-                item.request_stop()
-
-    def save_all_finished(self):
-        done_items = [i for i in self.items if i.state == "done"]
-        if not done_items:
-            messagebox.showinfo("Info", "No finished items to save.")
-            return
-
-        folder = filedialog.askdirectory(title="Select Folder to Save All Transcripts")
-        if folder:
-            count = 0
-            for item in done_items:
-                if os.path.exists(item.recovery_file):
-                    name = f"{os.path.splitext(item.filename)[0]}.txt"
-                    path = os.path.join(folder, name)
-                    try:
-                        with open(item.recovery_file, "r", encoding="utf-8") as src, open(path, "w", encoding="utf-8") as dst:
-                            dst.write(src.read())
-                        count += 1
-                    except: pass
-            messagebox.showinfo("Success", f"Saved {count} files to {folder}")
-
-
-
-    def delete_item(self, item_to_remove):
-        """
-        Removes the item.
-        """
-        if item_to_remove in self.items:
-            self.total_duration=self.total_duration-item_to_remove.durationInSeconds
-            self.update_total_duration_label()
-            self.items.remove(item_to_remove)
-            item_to_remove.pack_forget() # Hide immediately so it looks deleted
-            item_to_remove.request_stop()
-            item_to_remove.destroy()
-            self.after(0, self.update_total_progress)
-        else: print("item is not found in items")
-
-    def delete_recovery_file(self,item):
-        if os.path.exists(item.recovery_file):
-            try:
-                os.remove(item.recovery_file)
-                print('deleted')
-            except Exception as e:
-                print(f"Failed to delete: {e}")
-
-    def remove_from_list(self, item_to_remove):
-        if item_to_remove in self.items:
-            self.items.remove(item_to_remove)
-
-    # [ADD THIS NEW METHOD]
+    # ------------------------------------------------------------------- shutdown
 
     def on_closing(self):
         """Entry point when the user clicks X."""
@@ -454,31 +327,25 @@ class TranscriberQueueApp(ctk.CTk):
         # 3. Start the heavy lifting in a NEW thread
         #    (This keeps the UI responsive so the message renders)
         threading.Thread(target=self._run_shutdown_tasks, daemon=True).start()
+
     def show_closing_dialog(self):
         """Creates a simple, borderless message centered on the app."""
         dialog = ctk.CTkToplevel(self)
         dialog.title("")
-        dialog.overrideredirect(True) # Removes the title bar/X button
+        dialog.overrideredirect(True)  # Removes the title bar/X button
         dialog.attributes("-topmost", True)
 
-        # Dimensions
         w, h = 300, 120
-
-        # Center logic
         x = self.winfo_x() + (self.winfo_width() // 2) - (w // 2)
         y = self.winfo_y() + (self.winfo_height() // 2) - (h // 2)
         dialog.geometry(f"{w}x{h}+{x}+{y}")
 
-        # Styling - Matches your "not a loading ring" request
-        # Just a clean message telling them what is happening
         frame = ctk.CTkFrame(dialog, corner_radius=10)
         frame.pack(fill="both", expand=True)
 
-        label_title = ctk.CTkLabel(frame, text="Closing Application", font=ui_font(16, "bold"))
-        label_title.pack(pady=(20, 5))
+        ctk.CTkLabel(frame, text="Closing Application", font=ui_font(16, "bold")).pack(pady=(20, 5))
+        ctk.CTkLabel(frame, text="Cleaning up temporary files...", font=ui_font(12)).pack(pady=5)
 
-        label_status = ctk.CTkLabel(frame, text="Cleaning up temporary files...", font=ui_font(12))
-        label_status.pack(pady=5)
     def _run_shutdown_tasks(self):
         """Background thread: tear down without freezing the closing dialog.
 
@@ -486,17 +353,14 @@ class TranscriberQueueApp(ctk.CTk):
         that matters here is that the process always dies - hence the watchdog at the end.
         """
         try:
-            self.stop_all()
+            # Downloads first, and without waiting: they are sockets, and a stalled
+            # one can take its full timeout to notice it has been told to stop.
+            self.download_page.shutdown()
+
+            self.queue_page.cancel_all()
             time.sleep(0.5)
 
-            # A run still inside generate() cannot be interrupted, and pulling the model
-            # out from under it would crash rather than free anything. The forced exit
-            # below hands the VRAM back in that case.
-            if not any(item.state == "processing" for item in self.items):
-                try:
-                    transcribe_module.release_all_memory()
-                except Exception as e:
-                    log_runtime_error("Releasing GPU memory during shutdown failed", e)
+            self.queue_page.release_gpu_if_idle()
 
             Util.force_delete_folder(global_vars.rec_folder, max_retries=20, delay=0.1)
         except Exception as e:
@@ -515,97 +379,3 @@ class TranscriberQueueApp(ctk.CTk):
             self.destroy()
         finally:
             os._exit(0)
-
-    def update_total_progress(self):
-        self.update_engine_menu_state()
-        totalCount=len(self.items)
-        if totalCount==0:
-            self.lbl_progress_count.configure(text="")
-            self.progress_bar.pack_forget()
-            return
-        doneCount=sum([1 for x in self.items if x.state=="done"])
-        percentage=doneCount/totalCount
-        self.progress_bar.set(percentage)
-        self.lbl_progress_count.configure(text=f"{doneCount}/{totalCount}")
-
-
-    class UserCancelled(Exception):
-        pass
-
-    def worker_loop(self):
-        while True:
-            try:
-
-                # 1. Get next job
-                current_item = self.job_queue.get()
-
-                # ... (your existing setup code) ...
-
-                if current_item.cancel_flag:
-                    # ... (your existing skip logic) ...
-                    self.job_queue.task_done()
-                    continue
-
-                self.after(0, lambda target=current_item: target.update_status("Processing...", "processing"))
-                # Tk is not thread safe: the stopwatch schedules its own after() loop, so
-                # it has to be started on the main thread, not from this worker.
-                self.after(0, current_item.lbl_stopwatch.start)
-
-                try:
-                    with open(current_item.recovery_file, "w", encoding="utf-8") as f:
-
-                        # --- CHANGE 1: Force stop in on_progress ---
-                        def on_progress(percent, chunk_text):
-                            if current_item.cancel_flag:
-                                raise self.UserCancelled()  # <--- CRITICAL: Abort immediately!
-
-                            if chunk_text:
-                                f.write(chunk_text + " ")
-                                f.flush()
-                            self.after(0, lambda target=current_item: target.on_progress(percent, chunk_text))
-
-                        # --- CHANGE 2: Force stop in check_cancel ---
-                        def check_cancel():
-                            if current_item.cancel_flag:
-                                raise self.UserCancelled()  # <--- CRITICAL: Abort immediately!
-                            return False
-
-                        def on_status(message):
-                            self.after(0, lambda target=current_item, text=message: target.update_status(text, "processing"))
-
-                        transcribe_module.run_transcription(
-                            current_item.file_path,
-                            progress_callback=on_progress,
-                            status_callback=on_status,
-                            check_cancel=check_cancel
-                        )
-
-                    # If we get here, it finished successfully
-                    self.after(0, lambda target=current_item: target.finish_success())
-                    self.after(0, self.update_total_progress)
-
-                # --- CHANGE 3: Catch the forced stop ---
-                except self.UserCancelled:
-                    # This block runs INSTANTLY when you raise the exception above
-
-                    self.delete_recovery_file(current_item)
-                    self.after(0, lambda target=current_item: target.finish_stopped())
-
-                except Exception as e:
-                    self.delete_recovery_file(current_item)
-                    log_runtime_error(f"Transcription failed for {current_item.file_path}", e)
-                    self.after(0, lambda target=current_item: target.finish_error(str(e)))
-                    self.after(0, self.update_total_progress)
-
-                self.job_queue.task_done()
-                self.after(0, current_item.lbl_stopwatch.stop)
-                self.after(0, self.update_engine_menu_state)
-
-                # Only once nothing is left to run: between files the warm allocator
-                # cache is worth keeping, but an idle app should not sit on spare VRAM.
-                if self.job_queue.empty():
-                    transcribe_module.release_idle_memory()
-            except Exception as e:
-                log_runtime_error("Queue worker failed", e)
-                print(f"Queue Error: {e}")
-                time.sleep(1)

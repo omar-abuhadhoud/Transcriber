@@ -34,10 +34,34 @@ class Util():
                 audio = File(file_path)
                 if audio is not None and audio.info is not None:
                     return audio.info.length
-                
+
         except Exception as e:
             print(f"Error reading duration: {e}")
-        
+
+        # Mutagen only knows the containers it has parsers for, and downloads bring in
+        # ones it does not -- WebM above all, which is what YouTube and TikTok hand
+        # over. PyAV is already a dependency and reads every container the
+        # transcriber can decode, so a duration is always obtainable; it is just
+        # slower, which is why it is the fallback rather than the first attempt.
+        return Util._duration_via_pyav(file_path)
+
+    @staticmethod
+    def _duration_via_pyav(file_path):
+        try:
+            import av
+
+            with av.open(file_path, mode="r", metadata_errors="ignore") as container:
+                if container.duration:
+                    return container.duration / av.time_base
+
+                # Some fragmented streams carry no container duration but do carry one
+                # on the audio stream itself.
+                for stream in container.streams.audio:
+                    if stream.duration and stream.time_base:
+                        return float(stream.duration * stream.time_base)
+        except Exception as e:
+            print(f"Error reading duration with PyAV: {e}")
+
         return 0
 
     # --- Helper to make it readable (MM:SS) ---

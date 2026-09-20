@@ -1,3 +1,4 @@
+import gc
 import glob
 import os
 import re
@@ -31,6 +32,43 @@ _DISALLOWED_CHARS = re.compile(
     + "]"
 )
 _WHITESPACE = re.compile(r"\s+")
+
+
+def _cancel_criteria(check_cancel):
+    """Stop generate() at the next decoded token once the run has been cancelled.
+
+    Without this a cancel cannot land until the whole batch has finished decoding:
+    up to max_new_tokens of a GPU working on text nobody will read, with every
+    window's activations still resident. generate() consults a stopping criterion
+    after each token, so the abort costs one decoding step instead of a whole batch.
+    """
+    if check_cancel is None:
+        return None
+
+    import torch
+    from transformers import StoppingCriteria, StoppingCriteriaList
+
+    class CancelCriteria(StoppingCriteria):
+        def __init__(self):
+            self.cancelled = False
+
+        def __call__(self, input_ids, scores, **kwargs):
+            if not self.cancelled:
+                try:
+                    self.cancelled = bool(check_cancel())
+                except Exception:
+                    # Some callers signal by raising rather than returning True. Either
+                    # way it means stop, and letting it out of generate() would pin the
+                    # batch's tensors in the traceback of half of transformers.
+                    self.cancelled = True
+            return torch.full(
+                (input_ids.shape[0],),
+                self.cancelled,
+                dtype=torch.bool,
+                device=input_ids.device,
+            )
+
+    return StoppingCriteriaList([CancelCriteria()])
 
 
 class QwenASREngine(TranscriptionEngine):
@@ -98,6 +136,9 @@ class QwenASREngine(TranscriptionEngine):
             import torch
         except ImportError:
             return
+        # Tensors dropped a moment ago can still be held by a reference cycle, and the
+        # allocator cannot hand a block back while anything at all points at it.
+        gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -113,20 +154,45 @@ class QwenASREngine(TranscriptionEngine):
         if total_samples == 0:
             return
 
+        if check_cancel and check_cancel():
+            return
+
         windows = self._split_on_silence(audio)
 
-        for index in range(0, len(windows), self.batch_size):
-            if check_cancel and check_cancel():
-                return
+        # Set the moment anything abandons the run, so the way out can drop the
+        # decoded audio and the blocks the batches were using instead of leaving an
+        # idle process holding them.
+        cancelled = False
+        try:
+            for index in range(0, len(windows), self.batch_size):
+                if check_cancel and check_cancel():
+                    cancelled = True
+                    return
 
-            group = windows[index:index + self.batch_size]
-            texts = self._transcribe_batch(model, processor, [audio[s:e] for s, e in group])
+                group = windows[index:index + self.batch_size]
+                texts = self._transcribe_batch(
+                    model, processor, [audio[s:e] for s, e in group], check_cancel
+                )
 
-            # Emitted in window order, so the recovery file stays in sync with the audio.
-            for (_, end), text in zip(group, texts):
-                text = self._clean(text)
-                if progress_callback and text:
-                    progress_callback(min(1.0, end / total_samples), text)
+                # A cancel lands inside generate(), which then returns whatever it had
+                # decoded so far. That text belongs to a run nobody is waiting for.
+                if check_cancel and check_cancel():
+                    cancelled = True
+                    return
+
+                # Emitted in window order, so the recovery file stays in sync with the audio.
+                for (_, end), text in zip(group, texts):
+                    text = self._clean(text)
+                    if progress_callback and text:
+                        progress_callback(min(1.0, end / total_samples), text)
+        except BaseException:
+            # Callers may signal a cancel by raising out of one of the callbacks.
+            cancelled = True
+            raise
+        finally:
+            if cancelled:
+                audio = windows = None
+                self.release_cache()
 
         if status_callback: status_callback("Done!")
 
@@ -159,11 +225,11 @@ class QwenASREngine(TranscriptionEngine):
         windows.append((start, end))
         return windows
 
-    def _transcribe_batch(self, model, processor, chunks):
+    def _transcribe_batch(self, model, processor, chunks, check_cancel=None):
         import torch
 
         try:
-            return self._generate(model, processor, chunks)
+            return self._generate(model, processor, chunks, check_cancel)
         except torch.cuda.OutOfMemoryError:
             if len(chunks) == 1:
                 raise
@@ -171,11 +237,11 @@ class QwenASREngine(TranscriptionEngine):
             torch.cuda.empty_cache()
             middle = len(chunks) // 2
             return (
-                self._transcribe_batch(model, processor, chunks[:middle])
-                + self._transcribe_batch(model, processor, chunks[middle:])
+                self._transcribe_batch(model, processor, chunks[:middle], check_cancel)
+                + self._transcribe_batch(model, processor, chunks[middle:], check_cancel)
             )
 
-    def _generate(self, model, processor, chunks):
+    def _generate(self, model, processor, chunks, check_cancel=None):
         import torch
 
         inputs = processor.apply_transcription_request(
@@ -183,14 +249,29 @@ class QwenASREngine(TranscriptionEngine):
             language=self.language,
         ).to(model.device, model.dtype)
 
-        with torch.inference_mode():
-            output_ids = model.generate(**inputs, max_new_tokens=self.max_new_tokens)
+        output_ids = None
+        try:
+            with torch.inference_mode():
+                output_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=self.max_new_tokens,
+                    stopping_criteria=_cancel_criteria(check_cancel),
+                )
 
-        prompt_length = inputs["input_ids"].shape[1]
-        return [
-            processor.decode(output_ids[row, prompt_length:], return_format="transcription_only")
-            for row in range(output_ids.shape[0])
-        ]
+            if check_cancel and check_cancel():
+                return []
+
+            prompt_length = inputs["input_ids"].shape[1]
+            return [
+                processor.decode(output_ids[row, prompt_length:], return_format="transcription_only")
+                for row in range(output_ids.shape[0])
+            ]
+        finally:
+            # Dropped here, in the frame that owns them. On the way out of a cancel an
+            # exception is usually in flight, and its traceback keeps every frame it
+            # passed through alive -- including this one, and with it the whole batch's
+            # activations, which is exactly the VRAM the cancel is meant to give back.
+            del inputs, output_ids
 
     def _clean(self, text):
         text = text.strip()
