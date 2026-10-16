@@ -393,8 +393,10 @@ A file goes through four stages, and the row's progress bar tracks the last of t
 2. **Split on silence.** Qwen3-ASR decodes a whole request in one call, so long audio has
    to be cut. [`transcriber/vad.py`](transcriber/vad.py) runs Silero VAD
    (`transcriber/assets/silero_vad_v6.onnx`, MIT licensed) over onnxruntime to find the
-   cut points, and the audio becomes windows of at most 30 seconds that start and end in
-   silence rather than mid-word.
+   cut points. A window is never cut before 15 seconds; after that the first pause of
+   350 ms ends it, dropping to 200 ms from 20 seconds and 100 ms from 25 seconds, with a
+   forced cut at 30 seconds. Every window after the first also starts 50 ms early in the
+   real audio, so a word right after a cut keeps its first letter.
 3. **Batch through the GPU.** Windows are sent `batch_size` at a time, as chosen by the
    speed tier. Each window produces one progress event, which is what keeps the bar
    moving on a long file, and cancellation is polled between them so **X** takes effect

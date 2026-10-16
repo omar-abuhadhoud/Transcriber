@@ -4,6 +4,7 @@ import os
 import re
 
 from transcriber.base import TranscriptionEngine
+from transcriber.chunk_log import ChunkLog
 
 SAMPLE_RATE = 16000
 
@@ -31,6 +32,7 @@ _DISALLOWED_CHARS = re.compile(
     + re.escape(_ALLOWED_PUNCTUATION)
     + "]"
 )
+_DISALLOWED_RUNS = re.compile(_DISALLOWED_CHARS.pattern + "+")
 _WHITESPACE = re.compile(r"\s+")
 
 
@@ -80,14 +82,31 @@ class QwenASREngine(TranscriptionEngine):
     stream, while a batched generate() actually shares the forward pass.
     """
 
-    language = "ar"
+    # None lets the model detect the language of each window. Forcing "ar" made it
+    # translate English speech instead of transcribing it, and the translation could
+    # drift into Chinese, which _clean then deleted: whole sentences vanished.
+    language = None
+    # Window lengths: never cut before min_chunk_seconds, always cut at chunk_seconds.
+    min_chunk_seconds = 15
     chunk_seconds = 30
+    # (window length in seconds, pause in ms): once a window is that long, the first
+    # pause at least that long ends it. Steps must be in ascending order.
+    pause_steps = ((0, 350), (20, 200), (25, 100))
+    # Silero speech probability: a frame below silence_threshold counts towards a
+    # pause, and a window with no frame at speech_threshold is not sent at all.
+    silence_threshold = 0.35
+    speech_threshold = 0.5
+    # Every window after the first starts this much earlier in the real audio, reaching
+    # back into the pause the cut was made in. A window that opens on the very first
+    # sample of a word tends to lose that word's first letter; this lead-in is the
+    # file's own audio, so nothing is synthesised and nothing before the word is lost.
+    lead_in_ms = 50
     max_new_tokens = 440
     # Default only; the app overrides this from the selected speed tier.
     batch_size = 4
     dtype_name = "float16"
-    # Forcing language="ar" keeps English terms in Latin script (verified), so this only
-    # removes hallucinated scripts, never legitimate Arabic/English code-switching.
+    # The app transcribes Arabic and English only, so any other script in the output is
+    # removed: either a hallucination or speech in a language the app does not serve.
     strip_foreign_scripts = True
 
     def has_required_model_files(self, model_dir):
@@ -157,7 +176,10 @@ class QwenASREngine(TranscriptionEngine):
         if check_cancel and check_cancel():
             return
 
-        windows = self._split_on_silence(audio)
+        windows, reasons = self._split_on_silence(audio)
+        log = ChunkLog(
+            audio_path, total_samples, SAMPLE_RATE, windows, self.batch_size, self.lead_in_ms
+        )
 
         # Set the moment anything abandons the run, so the way out can drop the
         # decoded audio and the blocks the batches were using instead of leaving an
@@ -170,8 +192,19 @@ class QwenASREngine(TranscriptionEngine):
                     return
 
                 group = windows[index:index + self.batch_size]
+                log.batch_started()
                 texts = self._transcribe_batch(
-                    model, processor, [audio[s:e] for s, e in group], check_cancel
+                    model, processor, [self._window_audio(audio, s, e) for s, e in group], check_cancel
+                )
+                removed = [self._foreign_text(text) for text in texts]
+                texts = [self._clean(text) for text in texts]
+                log.batch_finished(
+                    index // self.batch_size + 1,
+                    group,
+                    index + 1,
+                    reasons[index:index + self.batch_size],
+                    texts,
+                    removed,
                 )
 
                 # A cancel lands inside generate(), which then returns whatever it had
@@ -182,7 +215,6 @@ class QwenASREngine(TranscriptionEngine):
 
                 # Emitted in window order, so the recovery file stays in sync with the audio.
                 for (_, end), text in zip(group, texts):
-                    text = self._clean(text)
                     if progress_callback and text:
                         progress_callback(min(1.0, end / total_samples), text)
         except BaseException:
@@ -190,40 +222,91 @@ class QwenASREngine(TranscriptionEngine):
             cancelled = True
             raise
         finally:
+            log.close("Cancelled" if cancelled else "Finished")
             if cancelled:
-                audio = windows = None
+                audio = windows = reasons = None
                 self.release_cache()
 
         if status_callback: status_callback("Done!")
 
+    def _window_audio(self, audio, start, end):
+        """The window's samples, reaching lead_in_ms back into the audio before it."""
+        lead_in = self.lead_in_ms * SAMPLE_RATE // 1000
+        return audio[max(0, start - lead_in):end]
+
+    def _pause_step(self, chunk_seconds):
+        """The (from seconds, pause ms) step that applies to a chunk this long."""
+        current = self.pause_steps[0]
+        for step in self.pause_steps:
+            if chunk_seconds >= step[0]:
+                current = step
+        return current
+
     def _split_on_silence(self, audio):
-        """Group VAD speech regions into windows of at most chunk_seconds."""
-        from transcriber.vad import VadOptions, get_speech_timestamps
+        """Cut the audio into windows at pauses that get shorter as the window grows.
 
-        options = VadOptions(
-            max_speech_duration_s=self.chunk_seconds,
-            min_silence_duration_ms=500,
-        )
-        speech = get_speech_timestamps(audio, options, sampling_rate=SAMPLE_RATE)
+        Walking Silero's 32 ms frames from the start of the current window: nothing is
+        cut before min_chunk_seconds; after that the first pause of pause_steps' length
+        for the window's current size ends it; at chunk_seconds it is cut regardless.
+        The cut is made once the pause has lasted that long, so the pause's remainder
+        opens the next window. Windows are back to back and no audio is dropped, except
+        a window in which VAD heard no speech at all.
 
-        if not speech:
-            return [(0, len(audio))]
+        Returns the (start, end) windows and, alongside them, why each one ends where
+        it does.
+        """
+        import numpy as np
 
-        max_samples = self.chunk_seconds * SAMPLE_RATE
+        from transcriber.vad import WINDOW_SIZE_SAMPLES, get_vad_model
+
+        total = len(audio)
+        padded = np.pad(audio, (0, WINDOW_SIZE_SAMPLES - total % WINDOW_SIZE_SAMPLES))
+        probs = get_vad_model()(padded)
+
+        frame_ms = WINDOW_SIZE_SAMPLES * 1000 / SAMPLE_RATE
+        min_frames = int(self.min_chunk_seconds * 1000 / frame_ms)
+        max_frames = int(self.chunk_seconds * 1000 / frame_ms)
+
         windows = []
-        start = speech[0]["start"]
-        end = speech[0]["end"]
+        reasons = []
+        start = 0
+        silent_run = 0
+        heard_speech = False
 
-        for region in speech[1:]:
-            if region["end"] - start <= max_samples:
-                end = region["end"]
+        def close(end_frame, reason):
+            if heard_speech:
+                windows.append((start * WINDOW_SIZE_SAMPLES, min(end_frame * WINDOW_SIZE_SAMPLES, total)))
+                reasons.append(reason)
+
+        for frame, prob in enumerate(probs):
+            heard_speech = heard_speech or prob >= self.speech_threshold
+            silent_run = silent_run + 1 if prob < self.silence_threshold else 0
+            length = frame + 1 - start
+
+            if length >= max_frames:
+                reason = f"no pause before {self.chunk_seconds} s; forced cut"
+            elif length >= min_frames:
+                from_seconds, needed = self._pause_step(length * frame_ms / 1000)
+                if silent_run * frame_ms < needed:
+                    continue
+                reason = (
+                    f"first {needed} ms pause "
+                    f"(chunk past {max(from_seconds, self.min_chunk_seconds)} s)"
+                )
             else:
-                windows.append((start, end))
-                start = region["start"]
-                end = region["end"]
+                continue
 
-        windows.append((start, end))
-        return windows
+            close(frame + 1, reason)
+            start = frame + 1
+            silent_run = 0
+            heard_speech = False
+
+        if start * WINDOW_SIZE_SAMPLES < total:
+            close(len(probs), "end of audio")
+
+        if not windows:
+            return [(0, total)], ["no speech detected; whole file sent as one chunk"]
+        return windows, reasons
 
     def _transcribe_batch(self, model, processor, chunks, check_cancel=None):
         import torch
@@ -272,6 +355,12 @@ class QwenASREngine(TranscriptionEngine):
             # passed through alive -- including this one, and with it the whole batch's
             # activations, which is exactly the VRAM the cancel is meant to give back.
             del inputs, output_ids
+
+    def _foreign_text(self, text):
+        """The stretches _clean is about to drop, so the dev log can say what was lost."""
+        if not self.strip_foreign_scripts:
+            return ""
+        return " ... ".join(_DISALLOWED_RUNS.findall(text))
 
     def _clean(self, text):
         text = text.strip()

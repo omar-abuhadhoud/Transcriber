@@ -13,3 +13,6 @@ tests
 # Installer build output: the staged app payload and the compiled setup exe.
 installer/stage
 installer/build
+
+# Development-only chunking/batching logs.
+logs
