@@ -128,6 +128,9 @@ anything by hand.
 
 ### Bulk actions
 
+The **Completed** and **Queued** checkboxes beside **Clear** remember their selections
+between app launches, saved in `%LOCALAPPDATA%\Transcriber\settings.json`.
+
 **Start All Pending** queues every idle row in order. **Cancel All** abandons the lot and
 hands the working memory back to the GPU. **Save All Finished** asks for one folder and
 writes every completed transcript into it as `<original name>.txt`, disambiguating with

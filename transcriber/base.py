@@ -81,7 +81,8 @@ class TranscriptionEngine(ABC):
         """Load the model into memory. Idempotent: repeated calls reuse the loaded model."""
 
     @abstractmethod
-    def transcribe(self, audio_path, progress_callback=None, status_callback=None, check_cancel=None):
+    def transcribe(self, audio_path, progress_callback=None, status_callback=None, check_cancel=None,
+                   artifact_callback=None):
         """Transcribe one file.
 
         progress_callback(fraction, new_text) is called with a 0..1 float and the text
@@ -93,4 +94,5 @@ class TranscriptionEngine(ABC):
         An engine that aborts must release what the run was using (release_cache)
         before it returns, because a cancelled run is exactly when someone is waiting
         for that memory.
+        artifact_callback(path) records generated files owned by this queue item.
         """

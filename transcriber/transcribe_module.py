@@ -1,12 +1,14 @@
 from transcriber.registry import active_engine, get_engine
 
 
-def run_transcription(audio_path, progress_callback=None, status_callback=None, check_cancel=None):
+def run_transcription(audio_path, progress_callback=None, status_callback=None, check_cancel=None,
+                      artifact_callback=None):
     get_engine().transcribe(
         audio_path,
         progress_callback=progress_callback,
         status_callback=status_callback,
         check_cancel=check_cancel,
+        artifact_callback=artifact_callback,
     )
 
 

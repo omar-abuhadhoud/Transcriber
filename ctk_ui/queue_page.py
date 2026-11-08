@@ -23,6 +23,7 @@ from ctk_ui.media_item import MediaItem
 from ctk_ui.speed_picker import SpeedPicker
 from ctk_ui.theme import ui_font
 from transcriber import registry, transcribe_module
+from transcriber.settings import load_settings, save_settings
 from transcriber.speed import evaluate_tiers
 from transcriber.util import Util
 
@@ -41,12 +42,18 @@ class UserCancelled(Exception):
 class QueuePage(ctk.CTkFrame):
     """Header, the list of files, and the footer of bulk actions."""
 
-    def __init__(self, parent, log_error, **kwargs):
+    def __init__(self, parent, log_error, clear_controls_parent=None, **kwargs):
         super().__init__(parent, fg_color="transparent", **kwargs)
 
         self.log_error = log_error
+        self.settings = load_settings(self.log_error)
         self.items = []
         self.job_queue = queue.Queue()
+        # Claiming a job and clearing unstarted rows must be mutually exclusive.
+        self.job_lock = threading.RLock()
+        self.engine_lock = threading.Lock()
+        self.cleanup_in_progress = False
+        self._clear_rows = {}
         self.total_duration = 0
         # The item the worker is inside right now, or None. Written by the worker and
         # read by the UI: a row can be cancelled and removed from self.items while its
@@ -58,6 +65,9 @@ class QueuePage(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
 
         self._build_header()
+        self._build_clear_controls(
+            self.header_frame if clear_controls_parent is None else clear_controls_parent
+        )
         self._build_list()
         self._build_footer()
 
@@ -140,6 +150,40 @@ class QueuePage(ctk.CTkFrame):
             fg_color="green"
         )
         self.btn_start_all.pack(side="right", padx=10)
+
+    def _build_clear_controls(self, parent):
+        self.clear_completed_var = ctk.BooleanVar(value=self.settings.get("clear_completed") is True)
+        self.clear_queued_var = ctk.BooleanVar(value=self.settings.get("clear_queued") is True)
+        self.clear_options = ctk.CTkFrame(
+            parent, fg_color=theme.TAB_BAR_FG, corner_radius=8,
+            border_width=1, border_color=theme.DROPDOWN_BORDER,
+        )
+        self.clear_options.pack(side="right")
+        self.btn_clear = ctk.CTkButton(
+            self.clear_options, text="Clear", command=self.clear_selected, width=64,
+            height=30, corner_radius=6, font=ui_font(12, "bold"),
+            fg_color=theme.TAB_HOVER, hover_color="#a93226",
+            text_color="white", text_color_disabled=theme.TAB_INACTIVE_TEXT,
+            state="disabled",
+        )
+        self.btn_clear.grid(row=0, column=0, padx=(6, 12), pady=6)
+        checkbox_style = dict(
+            width=0, height=22, checkbox_width=16, checkbox_height=16,
+            corner_radius=4, border_width=2, font=ui_font(12),
+            fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
+            border_color=theme.DROPDOWN_BORDER, checkmark_color="white",
+            text_color=theme.DROPDOWN_TEXT,
+        )
+        self.chk_clear_completed = ctk.CTkCheckBox(
+            self.clear_options, text="Completed", variable=self.clear_completed_var,
+            command=self.on_clear_options_changed, **checkbox_style,
+        )
+        self.chk_clear_completed.grid(row=0, column=1, padx=(0, 12))
+        self.chk_clear_queued = ctk.CTkCheckBox(
+            self.clear_options, text="Queued", variable=self.clear_queued_var,
+            command=self.on_clear_options_changed, **checkbox_style,
+        )
+        self.chk_clear_queued.grid(row=0, column=2, padx=(0, 12))
 
     # --------------------------------------------------------------- adding files
 
@@ -227,6 +271,8 @@ class QueuePage(ctk.CTkFrame):
             self.engine_menu.set(registry.label_for(registry.active_engine_name()))
 
     def queue_is_busy(self):
+        if self.cleanup_in_progress:
+            return True
         # running_item covers the gap where a cancelled row has already left the list
         # but its run has not finished unwinding yet.
         if self.running_item is not None:
@@ -234,6 +280,7 @@ class QueuePage(ctk.CTkFrame):
         return any(item.state in ["waiting", "processing"] for item in self.items)
 
     def update_engine_menu_state(self):
+        self.update_clear_button_state()
         if not self.engine_menu.winfo_exists():
             return
         idle = not self.queue_is_busy()
@@ -251,6 +298,193 @@ class QueuePage(ctk.CTkFrame):
             if item.state in ["idle", "cancelled", "error"]:
                 item.request_start()
 
+    def _can_clear(self, item, completed):
+        if self.running_item is item or item.clearing:
+            return False
+        if completed:
+            return item.state == "done"
+        return not item.has_started and item.state in ("idle", "waiting", "cancelled")
+
+    def update_clear_button_state(self):
+        completed = self.clear_completed_var.get()
+        queued = self.clear_queued_var.get()
+        enabled = any(
+            (completed and self._can_clear(item, True))
+            or (queued and self._can_clear(item, False))
+            for item in self.items
+        )
+        enabled = enabled and not self.cleanup_in_progress
+        self.btn_clear.configure(
+            text="Clearing..." if self.cleanup_in_progress else "Clear",
+            state="normal" if enabled else "disabled",
+            fg_color=theme.DANGER if enabled else theme.TAB_HOVER,
+        )
+
+    def on_clear_options_changed(self):
+        self.update_clear_button_state()
+        self.settings.update(
+            clear_completed=self.clear_completed_var.get(),
+            clear_queued=self.clear_queued_var.get(),
+        )
+        try:
+            save_settings(self.settings)
+        except OSError as exc:
+            self.log_error("Could not save clear checkbox preferences", exc)
+
+    def clear_selected(self):
+        self._clear_items(
+            completed=self.clear_completed_var.get(), queued=self.clear_queued_var.get(),
+        )
+
+    def _clear_items(self, completed=False, queued=False):
+        if self.cleanup_in_progress:
+            return
+        title = "Clear selected items"
+        candidates = [
+            (item, item.state == "done") for item in self.items
+            if (completed and self._can_clear(item, True))
+            or (queued and self._can_clear(item, False))
+        ]
+        if not candidates:
+            self.update_clear_button_state()
+            return
+        done_count = sum(is_completed for _, is_completed in candidates)
+        queued_count = len(candidates) - done_count
+        details = []
+        if done_count:
+            details.append(
+                "Completed: {0}. Permanently delete their recovery transcripts, temporary "
+                "Word previews, and run logs, and release unused resources. "
+                "Save any transcripts you need first.".format(done_count)
+            )
+        if queued_count:
+            details.append("Queued: {0}. Remove these items that have never started.".format(queued_count))
+        details.append("Running jobs, original media, and explicitly saved transcripts will be kept.")
+        if not messagebox.askyesno(
+            title, "Clear {0} item(s)?\n\n{1}".format(
+                len(candidates), "\n\n".join(details)), parent=self, icon="warning", default="no",
+        ):
+            return
+
+        # The dialog runs a Tk event loop: recheck after approval, since a waiting
+        # item may have started while the user was reading the question.
+        jobs = []
+        with self.job_lock:
+            for item, is_completed in candidates:
+                if item not in self.items or not self._can_clear(item, is_completed):
+                    continue
+                # Cancel the queued token without changing the row's visible status.
+                # The worker checks this under the same lock before claiming a job.
+                item.cancel_token.cancelled = True
+                item.run_id += 1
+                item.set_clearing(True)
+                key = id(item)
+                self._clear_rows[key] = item
+                paths = tuple(item.generated_files | {item.recovery_file}) if is_completed else ()
+                jobs.append((key, paths, is_completed))
+
+        if not jobs:
+            self.update_clear_button_state()
+            return
+        self.cleanup_in_progress = True
+        self.purge_cancelled_jobs()
+        self.chk_clear_completed.configure(state="disabled")
+        self.chk_clear_queued.configure(state="disabled")
+        self.update_engine_menu_state()
+        results = queue.Queue()
+        self.cleanup_thread = threading.Thread(
+            target=self._clean_in_background, args=(jobs, results), daemon=True,
+            name="queue-cleanup",
+        )
+        try:
+            self.cleanup_thread.start()
+        except Exception as exc:
+            # Use the same completion path to restore reserved rows if startup fails.
+            results.put(([(key, list(paths) or ["Cleanup did not start"]) for key, paths, _ in jobs],
+                         [str(exc)]))
+        self.after(50, lambda: self._poll_cleanup(results))
+
+    def _clean_in_background(self, jobs, results):
+        """Only plain data and disk/GPU operations here: no Tk calls, including after()."""
+        outcomes = []
+        failed = []
+        try:
+            for key, paths, _ in jobs:
+                try:
+                    failures = self.delete_generated_files(paths)
+                except Exception as exc:
+                    failures = list(paths) or [str(exc)]
+                    self.log_error("Background cleanup failed", exc)
+                outcomes.append((key, failures))
+                failed.extend(failures)
+            # Never wait for or unload a model belonging to an active run. The
+            # transcription worker holds this lock through inference and cache cleanup.
+            if any(completed for _, _, completed in jobs) and self.engine_lock.acquire(blocking=False):
+                try:
+                    if self.running_item is None:
+                        transcribe_module.release_all_memory()
+                except Exception as exc:
+                    self.log_error("Releasing memory after clearing completed items failed", exc)
+                    failed.append("Model memory: " + str(exc))
+                finally:
+                    self.engine_lock.release()
+        finally:
+            finished = {key for key, _ in outcomes}
+            for key, paths, _ in jobs:
+                if key not in finished:
+                    failures = list(paths) or ["Cleanup interrupted"]
+                    outcomes.append((key, failures))
+                    failed.extend(failures)
+            results.put((outcomes, failed))
+
+    def _poll_cleanup(self, results):
+        """Called only by Tk's main loop; apply all row removals in one callback."""
+        try:
+            outcomes, failed = results.get_nowait()
+        except queue.Empty:
+            self.after(50, lambda: self._poll_cleanup(results))
+            return
+
+        removed = set()
+        for key, failures in outcomes:
+            item = self._clear_rows[key]
+            if failures:
+                item.generated_files.intersection_update(failures)
+                item.set_clearing(False)
+                if item.state == "waiting":
+                    item.request_cancel()
+            else:
+                removed.add(key)
+                item.destroy()
+        self.items = [item for item in self.items if id(item) not in removed]
+        self.total_duration = sum(item.durationInSeconds for item in self.items)
+        self._clear_rows.clear()
+        self.cleanup_in_progress = False
+        self.chk_clear_completed.configure(state="normal")
+        self.chk_clear_queued.configure(state="normal")
+        self.update_total_duration_label()
+
+        self.update_total_progress()
+        if failed:
+            messagebox.showwarning(
+                "Clear selected items", "Some resources could not be cleared. Close any open Word previews "
+                "and try again.\n\n" + "\n".join(failed[:10]), parent=self,
+            )
+
+    def delete_generated_files(self, paths):
+        """Delete only paths explicitly owned by this row, never source media/exports."""
+        failed = []
+        for path in paths:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                self.log_error("Could not delete generated file " + path, exc)
+                failed.append(path)
+                continue
+        return failed
+
     def cancel_all(self):
         """Give up on everything in flight and hand the working VRAM back.
 
@@ -260,7 +494,7 @@ class QueuePage(ctk.CTkFrame):
         The rows stay too, at rest, so Start All Pending can pick them up again.
         """
         for item in list(self.items):
-            if item.state in ["waiting", "processing"]:
+            if not item.clearing and item.state in ["waiting", "processing"]:
                 item.request_cancel()
 
         self.purge_cancelled_jobs()
@@ -268,7 +502,7 @@ class QueuePage(ctk.CTkFrame):
 
         # A run still unwinding frees its own memory on the way out, and doing it from
         # here as well would mean two threads in the allocator at once.
-        if self.running_item is None:
+        if self.running_item is None and not self.cleanup_in_progress:
             self.release_working_memory()
 
     def release_working_memory(self):
@@ -298,7 +532,7 @@ class QueuePage(ctk.CTkFrame):
             self.job_queue.put(item)
 
     def save_all_finished(self):
-        done_items = [i for i in self.items if i.state == "done"]
+        done_items = [i for i in self.items if i.state == "done" and not i.clearing]
         if not done_items:
             messagebox.showinfo("Info", "No finished items to save.")
             return
@@ -352,6 +586,8 @@ class QueuePage(ctk.CTkFrame):
         item here, and the recovery file goes with it.
         """
         if item_to_remove not in self.items:
+            return
+        if item_to_remove.clearing:
             return
 
         # Cancelled before anything else is read, so a worker that is picking this
@@ -418,6 +654,7 @@ class QueuePage(ctk.CTkFrame):
         def apply():
             if item.winfo_exists() and item.run_id == run_id:
                 fn()
+                self.update_clear_button_state()
 
         try:
             self.after(0, apply)
@@ -427,21 +664,22 @@ class QueuePage(ctk.CTkFrame):
 
     def worker_loop(self):
         while True:
+            current_item = None
+            engine_acquired = False
             try:
                 current_item = self.job_queue.get()
-                run_id = current_item.run_id
+                self.engine_lock.acquire()
+                engine_acquired = True
                 # Taken once, and polled through the run: the row's own token is
                 # replaced the moment it is started again, and this run must keep
                 # answering to the one it was started with.
-                token = current_item.cancel_token
-
-                if token.cancelled:
-                    # Cancelled while it was still queued. Nothing ever started, so
-                    # there is nothing to unwind and nothing to free.
-                    self.job_queue.task_done()
-                    continue
-
-                self.running_item = current_item
+                with self.job_lock:
+                    run_id = current_item.run_id
+                    token = current_item.cancel_token
+                    if token.cancelled:
+                        continue
+                    self.running_item = current_item
+                    current_item.has_started = True
                 self.post_to_item(current_item, run_id, lambda target=current_item:
                                   target.update_status("Processing...", "processing"))
                 # Tk is not thread safe: the stopwatch schedules its own after() loop,
@@ -450,10 +688,7 @@ class QueuePage(ctk.CTkFrame):
 
                 cancelled = self._transcribe_one(current_item, run_id, token)
 
-                self.running_item = None
-                self.job_queue.task_done()
                 self.post_to_item(current_item, run_id, current_item.lbl_stopwatch.stop)
-                self.after(0, self.update_engine_menu_state)
 
                 # After a cancel, because that is when someone is waiting for the
                 # memory. Otherwise only once nothing is left to run: between files
@@ -467,7 +702,18 @@ class QueuePage(ctk.CTkFrame):
             finally:
                 # Whatever happened, this worker is no longer inside a run, and the
                 # shutdown path reads this to decide whether it may unload the model.
-                self.running_item = None
+                with self.job_lock:
+                    self.running_item = None
+                if engine_acquired:
+                    self.engine_lock.release()
+                if current_item is not None:
+                    self.job_queue.task_done()
+                # Do not retain the last completed row while blocked on Queue.get().
+                current_item = token = None
+                try:
+                    self.after(0, self.update_total_progress)
+                except Exception:
+                    pass
 
     def _transcribe_one(self, current_item, run_id, token):
         """Run one file. Returns True if it was cancelled rather than finished."""
@@ -499,6 +745,7 @@ class QueuePage(ctk.CTkFrame):
                     progress_callback=on_progress,
                     status_callback=on_status,
                     check_cancel=check_cancel,
+                    artifact_callback=current_item.generated_files.add,
                 )
 
             self.post_to_item(current_item, run_id, lambda target=current_item:
@@ -532,7 +779,7 @@ class QueuePage(ctk.CTkFrame):
         under it; that would crash rather than free anything. The caller's forced exit
         hands the memory back in that case.
         """
-        if self.running_item is not None:
+        if self.running_item is not None or self.cleanup_in_progress:
             return False
         try:
             transcribe_module.release_all_memory()

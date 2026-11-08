@@ -40,6 +40,9 @@ class MediaItem(ctk.CTkFrame):
         self.on_delete_click=on_delete_click
         self.filename = os.path.basename(file_path)
         self.state = "idle"  # idle, waiting, processing, done, error, cancelled
+        self.has_started = False
+        self.clearing = False
+        self.generated_files = set()
         # Bumped every time this row starts or is cancelled. The worker carries the
         # value it started with, so a callback from a run that has been abandoned
         # cannot land on a row that has since been started again.
@@ -173,6 +176,7 @@ class MediaItem(ctk.CTkFrame):
         # 5. Create a standard Temporary File (Invisible to your project)
         # This creates a file in C:\Users\You\AppData\Local\Temp\...
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.rtf', encoding='utf-8') as temp:
+            self.generated_files.add(temp.name)
             temp.write(full_content)
             temp_path = temp.name
 
@@ -180,12 +184,29 @@ class MediaItem(ctk.CTkFrame):
         os.startfile(temp_path)
 
     def _handle_delete_click(self):
+        if self.clearing:
+            return
         if self.on_delete_click:
             self.on_delete_click(self)
+
+    def set_clearing(self, clearing):
+        """Reserve this row while its files are being removed in the background."""
+        buttons = (self.btn_start, self.btn_save, self.btn_copy, self.btn_view, self.btn_delete)
+        self.clearing = clearing
+        if clearing:
+            self._states_before_clear = [button.cget("state") for button in buttons]
+            for button in buttons:
+                button.configure(state="disabled")
+        else:
+            for button, state in zip(buttons, self._states_before_clear):
+                button.configure(state=state)
+            self._states_before_clear = []
 
     
     # --- METHODS THAT WERE MISSING ---
     def request_start(self):
+        if self.clearing:
+            return
         if self.state in ["processing", "waiting"]: return
         self.reset_ui()
         self.run_id += 1

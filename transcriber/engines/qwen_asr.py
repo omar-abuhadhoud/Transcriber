@@ -161,7 +161,8 @@ class QwenASREngine(TranscriptionEngine):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def transcribe(self, audio_path, progress_callback=None, status_callback=None, check_cancel=None):
+    def transcribe(self, audio_path, progress_callback=None, status_callback=None, check_cancel=None,
+                   artifact_callback=None):
         model, processor = self.load(status_callback)
 
         if status_callback: status_callback(f"Transcribing {os.path.basename(audio_path)}...")
@@ -178,7 +179,8 @@ class QwenASREngine(TranscriptionEngine):
 
         windows, reasons = self._split_on_silence(audio)
         log = ChunkLog(
-            audio_path, total_samples, SAMPLE_RATE, windows, self.batch_size, self.lead_in_ms
+            audio_path, total_samples, SAMPLE_RATE, windows, self.batch_size, self.lead_in_ms,
+            artifact_callback=artifact_callback,
         )
 
         # Set the moment anything abandons the run, so the way out can drop the

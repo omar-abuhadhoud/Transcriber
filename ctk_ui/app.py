@@ -77,12 +77,17 @@ class TranscriberQueueApp(ctk.CTk):
         self.build_update_banner()
 
         # --- 1. TABS ---
+        self.top_bar = ctk.CTkFrame(self, fg_color="transparent")
+        self.top_bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(10, 0))
+        self.top_bar.grid_columnconfigure(0, weight=1)
         self.tab_bar = TabBar(
-            self,
+            self.top_bar,
             tabs=[(QUEUE_TAB, "Transcription Queue"), (DOWNLOAD_TAB, "Download")],
             command=self.show_tab,
         )
-        self.tab_bar.grid(row=1, column=0, sticky="w", padx=20, pady=(10, 0))
+        self.tab_bar.grid(row=0, column=0, sticky="w")
+        self.queue_actions = ctk.CTkFrame(self.top_bar, fg_color="transparent")
+        self.queue_actions.grid(row=0, column=1, sticky="e", padx=(15, 0))
 
         # --- 2. PAGES ---
         self.build_pages()
@@ -101,7 +106,9 @@ class TranscriberQueueApp(ctk.CTk):
     # ------------------------------------------------------------------- the pages
 
     def build_pages(self):
-        self.queue_page = QueuePage(self, log_error=log_runtime_error)
+        self.queue_page = QueuePage(
+            self, log_error=log_runtime_error, clear_controls_parent=self.queue_actions,
+        )
         self.download_page = DownloadPage(
             self,
             on_downloaded=self.on_download_finished,
@@ -123,6 +130,12 @@ class TranscriberQueueApp(ctk.CTk):
                 page.grid()
             else:
                 page.grid_remove()
+
+        if hasattr(self, "queue_actions"):
+            if key == QUEUE_TAB:
+                self.queue_actions.grid()
+            else:
+                self.queue_actions.grid_remove()
 
         # The toast stack is placed rather than gridded, so a page shown afterwards
         # would otherwise be drawn over it.

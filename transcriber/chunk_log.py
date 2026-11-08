@@ -12,6 +12,7 @@ shown for a window is the wall time of the batch it was decoded in.
 import os
 import sys
 import time
+import uuid
 from datetime import datetime
 
 from transcriber.paths import get_install_root
@@ -36,7 +37,8 @@ def _mmssms(seconds):
 class ChunkLog:
     """Writes one run's log as it goes, so a crash or cancel still leaves what happened."""
 
-    def __init__(self, audio_path, total_samples, sample_rate, windows, batch_size, lead_in_ms=0):
+    def __init__(self, audio_path, total_samples, sample_rate, windows, batch_size, lead_in_ms=0,
+                 artifact_callback=None):
         self.file = None
         self.sample_rate = sample_rate
         self.run_started = time.perf_counter()
@@ -48,7 +50,10 @@ class ChunkLog:
             os.makedirs(folder, exist_ok=True)
             name = os.path.splitext(os.path.basename(audio_path))[0]
             stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            self.file = open(os.path.join(folder, f"{stamp}_{name}.log"), "w", encoding="utf-8")
+            path = os.path.join(folder, f"{stamp}_{name}_{uuid.uuid4().hex[:8]}.log")
+            self.file = open(path, "w", encoding="utf-8")
+            if artifact_callback:
+                artifact_callback(path)
         except OSError:
             self.file = None
             return
@@ -114,4 +119,8 @@ class ChunkLog:
             self.file.write(text)
             self.file.flush()
         except (OSError, ValueError):
+            try:
+                self.file.close()
+            except OSError:
+                pass
             self.file = None
